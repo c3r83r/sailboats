@@ -326,7 +326,6 @@ export class AppComponent implements OnInit, OnDestroy {
     jib: { deploy: 0, sheet: 0, side: 0 },
     main: { deploy: 0, sheet: 0, side: 0 },
     anchored: true,
-    jibButterfly: false,
   };
   playerBoatId: string | null = null;
 
@@ -368,6 +367,10 @@ export class AppComponent implements OnInit, OnDestroy {
   private readonly windDir = 90;
   // beta (angle off dead-downwind) at/above which the jib can be winged ("motyl").
   private readonly BUTTERFLY_BETA = 162;
+  // Persistent side the jib is poled out to on a run: -1/+1 = winged on that
+  // side, 0 = not winged (self-tacking). Only M flips it; a gybe leaves it put
+  // so the main comes across and blankets the jib until it is re-winged.
+  private jibWing = 0;
   private playerHeading = 90;
   private playerSpeed = 0;
 
@@ -481,10 +484,17 @@ export class AppComponent implements OnInit, OnDestroy {
       return;
     }
 
-    // M wings the jib out to windward when running dead downwind ("na motyla").
+    // M throws the jib across to the other side ("na motyla"). On a run the jib
+    // is held on its side by the whisker pole, so M just flips that side: the
+    // first press from the blanketed (leeward) side wings it out to windward
+    // where it fills; pressing again brings it back across.
     if (key === 'm') {
       if (this.controls.jib.deploy >= 0.05 && this.inButterflyZone()) {
-        this.controls = { ...this.controls, jibButterfly: !this.controls.jibButterfly };
+        const lateral = Math.sin(this.deg2rad(this.windDir - this.playerHeading));
+        const leewardSide = lateral >= 0 ? 1 : -1;
+        const current = this.jibWing !== 0 ? this.jibWing : leewardSide;
+        this.jibWing = -current;
+        this.controls = { ...this.controls, jib: { ...this.controls.jib, side: this.jibWing } };
         this.recomputeAndDispatch();
       }
       return;
@@ -566,12 +576,6 @@ export class AppComponent implements OnInit, OnDestroy {
   private tickControls(dt: number): void {
     let next = this.controls;
 
-    // Butterfly only makes sense deep downwind; drop it once we head up.
-    if (this.controls.jibButterfly && !this.inButterflyZone()) {
-      this.controls = { ...this.controls, jibButterfly: false };
-      next = this.controls;
-    }
-
     // Cannons charge up the longer their arrow key is held.
     if (this.chargingSide) {
       this.chargeLevel = this.clamp((performance.now() - this.chargeStart) / this.CHARGE_TIME_MS, 0, 1);
@@ -631,10 +635,19 @@ export class AppComponent implements OnInit, OnDestroy {
       }
     }
 
-    // Self-tacking: the jib auto-selects the leeward side (or none when furled/eased).
+    // Jib side: self-tacking on a reach. On a run the side is set by hand with M
+    // ("na motyla") and held by the whisker pole, so it does NOT auto-flip on a
+    // gybe - only the main comes across, blanketing the fixed-side jib until it
+    // is re-winged. Leaving the run zone clears the pole back to self-tacking.
     const jibLateral = Math.sin(this.deg2rad(this.windDir - this.playerHeading));
     const leewardSide = jibLateral >= 0 ? 1 : -1;
-    jib = { ...jib, side: jib.deploy < 0.05 || jib.sheet < 0.05 ? 0 : leewardSide };
+    if (this.inButterflyZone() && jib.deploy >= 0.05) {
+      const side = this.jibWing !== 0 ? this.jibWing : leewardSide;
+      jib = { ...jib, side };
+    } else {
+      this.jibWing = 0;
+      jib = { ...jib, side: jib.deploy < 0.05 || jib.sheet < 0.05 ? 0 : leewardSide };
+    }
 
     next = { ...next, rudder, main, jib };
     this.controls = next;
@@ -718,7 +731,13 @@ export class AppComponent implements OnInit, OnDestroy {
     if (controls.jib.deploy < 0.05) {
       jib = { power: 0, thrust: 0, state: 'down' };
     } else if (runZone) {
-      if (controls.jibButterfly) {
+      // On a run the jib only drives when poled out to windward (opposite the
+      // leeward main). Set to leeward (or after a gybe) it sits blanketed and
+      // luffs without furling.
+      const lateral = Math.sin(this.deg2rad(this.windDir - heading));
+      const leewardSide = lateral >= 0 ? 1 : -1;
+      const winged = controls.jib.side !== 0 && controls.jib.side === -leewardSide;
+      if (winged) {
         const area = controls.jib.deploy;
         jib = { power: area * 0.5, thrust: area * 0.9, state: 'trim' };
       } else {

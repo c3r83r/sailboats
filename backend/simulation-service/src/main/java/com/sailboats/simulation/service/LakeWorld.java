@@ -65,6 +65,23 @@ public class LakeWorld {
     private static final double BOT_ENGAGE_RANGE = 7.0;
     private static final double BOT_FIRE_RANGE = 5.0;
     private static final double BOT_NOGO_DEG = 42.0;
+    // How far ahead a bot looks for hazards, how close it keeps to landmasses and
+    // how wide a buffer it leaves around the lake edge before bearing away.
+    private static final double BOT_AVOID_LOOKAHEAD = 3.5;
+    private static final double BOT_ISLAND_CLEARANCE = 0.9;
+    private static final double BOT_EDGE_MARGIN = 2.5;
+    // Below this speed while pointing into the wind a bot is "in irons" and must
+    // luff its sheets to let the bow blow off the wind before it can sail again.
+    private static final double BOT_IRONS_SPEED = 0.3;
+    // While recovering, bear away to roughly this many degrees off the wind (a
+    // broad reach) to rebuild speed, luffing until the bow is this far off the
+    // wind, and stay in recovery until properly powered up past this speed.
+    private static final double BOT_RECOVER_REACH_DEG = 100.0;
+    private static final double BOT_RECOVER_DRIVE_DEG = 50.0;
+    private static final double BOT_RECOVER_EXIT_SPEED = 0.8;
+    // When beating, commit to a tack and only switch once the desired heading is
+    // well onto the other side of the wind, so bots stop flip-flopping head-up.
+    private static final double BOT_TACK_HYSTERESIS_DEG = 25.0;
     private static final String[] BOT_NAMES = {
         "Korsarz", "Pirat Rudy", "Czarny Jack", "Kapitan Hak", "Morski Wilk",
         "Rekin", "Sztorm", "Kraken", "Barakuda", "Mewa"
@@ -193,6 +210,11 @@ public class LakeWorld {
             return;
         }
         boat.setLastFireAt(now);
+        // A human opening fire becomes a valid target: bots leave players alone
+        // until they start shooting ("dopoki gracz nie zacznie").
+        if (!boat.isBot()) {
+            boat.setHasFired(true);
+        }
 
         double p = Math.max(0, Math.min(1, power));
         double speed = PROJECTILE_SPEED * (0.45 + 0.55 * p);
@@ -337,6 +359,8 @@ public class LakeWorld {
         boat.setAnchored(true);
         boat.setHealth(100);
         boat.setSunk(false);
+        // Fresh life starts peaceful: bots ignore the player again until they fire.
+        boat.setHasFired(false);
     }
 
     private void detectCollisions(long now) {
@@ -565,6 +589,32 @@ public class LakeWorld {
     private void botThink(BoatState bot, long now) {
         bot.setAnchored(false);
         double windFrom = windDirection + 180.0;
+        BotBrain brain = botBrains.computeIfAbsent(bot.getBoatId(), id -> new BotBrain());
+
+        double signedOff = signedDelta(bot.getHeading(), windFrom);
+        double offWind = Math.abs(signedOff);
+
+        // In-irons recovery: when a bot loses way pointing into the wind it can no
+        // longer steer, so - exactly like a helmsman - we let the wind blow the bow
+        // off and rebuild speed on a reach BEFORE sailing normally again. The state
+        // is sticky (commit to one side, power up past BOT_RECOVER_EXIT_SPEED) so
+        // the bot does not claw straight back up and stall over and over.
+        if (!brain.recovering && bot.getSpeed() < BOT_IRONS_SPEED && offWind < BOT_NOGO_DEG) {
+            brain.recovering = true;
+            brain.recoverSide = signedOff >= 0 ? 1.0 : -1.0;
+        }
+        if (brain.recovering) {
+            double reach = normalizeHeading(windFrom + brain.recoverSide * BOT_RECOVER_REACH_DEG);
+            // Luff while pinned head-to-wind so the fall-off torque turns the bow,
+            // then sheet in once it has fallen off far enough to drive.
+            bot.setSailTrim(offWind < BOT_RECOVER_DRIVE_DEG ? 0.0 : 0.9);
+            double err = signedDelta(reach, bot.getHeading());
+            bot.setRudder(Math.max(-1.0, Math.min(1.0, err / 45.0)));
+            if (bot.getSpeed() >= BOT_RECOVER_EXIT_SPEED && offWind >= BOT_NOGO_DEG) {
+                brain.recovering = false;
+            }
+            return;
+        }
 
         BoatState target = nearestEnemy(bot);
         double targetHeading;
@@ -585,12 +635,19 @@ public class LakeWorld {
             targetHeading = botWanderHeading(bot, now);
         }
 
+        // Try to steer clear of islands ahead and keep off the lake edge; if the
+        // path is open this leaves the chosen heading untouched (hold course).
+        targetHeading = steerClear(bot, targetHeading);
+
         // Never steer straight into the no-go zone; bear off to close-hauled.
-        targetHeading = avoidIrons(targetHeading, windFrom);
+        targetHeading = avoidIrons(targetHeading, windFrom, brain);
 
         double err = signedDelta(targetHeading, bot.getHeading());
         bot.setRudder(Math.max(-1.0, Math.min(1.0, err / 45.0)));
-        bot.setSailTrim(0.85);
+        // Autotrim: keep the sheets perfectly set so the bot always sails the full
+        // speed polar for its point of sail (the polar already shapes drive by
+        // angle, so optimal trim is full draught).
+        bot.setSailTrim(1.0);
     }
 
     private BoatState nearestEnemy(BoatState bot) {
@@ -626,16 +683,83 @@ public class LakeWorld {
         return Math.toDegrees(Math.atan2(dy, dx));
     }
 
-    private double avoidIrons(double heading, double windFrom) {
+    private double avoidIrons(double heading, double windFrom, BotBrain brain) {
         double diff = signedDelta(heading, windFrom);
         if (Math.abs(diff) < BOT_NOGO_DEG) {
-            return normalizeHeading(windFrom + (diff >= 0 ? BOT_NOGO_DEG : -BOT_NOGO_DEG));
+            // Pick a tack, but commit to it: only switch sides once the desired
+            // heading is well onto the other tack, so the bot stops flip-flopping
+            // around dead-upwind (which read as a string of failed tacks).
+            double side;
+            if (brain.tackSide == 0) {
+                side = diff >= 0 ? 1.0 : -1.0;
+            } else if (diff > BOT_TACK_HYSTERESIS_DEG) {
+                side = 1.0;
+            } else if (diff < -BOT_TACK_HYSTERESIS_DEG) {
+                side = -1.0;
+            } else {
+                side = brain.tackSide; // hold the current tack
+            }
+            brain.tackSide = side;
+            return normalizeHeading(windFrom + side * BOT_NOGO_DEG);
         }
         return normalizeHeading(heading);
     }
 
+    // Nudge the desired heading away from islands lying ahead and from the lake
+    // edge, using a simple repulsion field. When nothing is in the way the result
+    // equals the requested heading, so bots otherwise just hold their course.
+    private double steerClear(BoatState bot, double desired) {
+        double x = bot.getX();
+        double y = bot.getY();
+        double rad = Math.toRadians(desired);
+        double dirX = Math.cos(rad);
+        double dirY = Math.sin(rad);
+        double vx = dirX;
+        double vy = dirY;
+
+        // Edge repulsion: bear back inside before reaching the boundary.
+        if (x < BOT_EDGE_MARGIN) {
+            vx += (BOT_EDGE_MARGIN - x) / BOT_EDGE_MARGIN;
+        } else if (x > WORLD_SIZE - BOT_EDGE_MARGIN) {
+            vx -= (x - (WORLD_SIZE - BOT_EDGE_MARGIN)) / BOT_EDGE_MARGIN;
+        }
+        if (y < BOT_EDGE_MARGIN) {
+            vy += (BOT_EDGE_MARGIN - y) / BOT_EDGE_MARGIN;
+        } else if (y > WORLD_SIZE - BOT_EDGE_MARGIN) {
+            vy -= (y - (WORLD_SIZE - BOT_EDGE_MARGIN)) / BOT_EDGE_MARGIN;
+        }
+
+        // Island repulsion: bear away from landmasses that lie ahead within reach.
+        for (Island island : islands) {
+            double ox = x - island.cx;
+            double oy = y - island.cy;
+            double d = Math.hypot(ox, oy);
+            double influence = island.maxRadius + BOT_ISLAND_CLEARANCE + BOT_AVOID_LOOKAHEAD;
+            if (d >= influence || d < 1e-6) {
+                continue;
+            }
+            boolean ahead = (island.cx - x) * dirX + (island.cy - y) * dirY > 0;
+            boolean imminent = d < island.maxRadius + BOT_ISLAND_CLEARANCE;
+            if (!ahead && !imminent) {
+                continue; // island is behind us and not an immediate hazard
+            }
+            double strength = (influence - d) / influence;
+            vx += (ox / d) * strength * 1.8;
+            vy += (oy / d) * strength * 1.8;
+        }
+
+        if (vx == 0 && vy == 0) {
+            return desired;
+        }
+        return normalizeHeading(Math.toDegrees(Math.atan2(vy, vx)));
+    }
+
     private void botMaybeFire(BoatState bot, BoatState target, double d, long now) {
         if (d > BOT_FIRE_RANGE || now - bot.getLastFireAt() < FIRE_COOLDOWN_MS) {
+            return;
+        }
+        // Hold fire until the player opens up - bots only retaliate, never start it.
+        if (!target.isHasFired()) {
             return;
         }
         double bearing = Math.toDegrees(Math.atan2(target.getY() - bot.getY(), target.getX() - bot.getX()));
@@ -657,6 +781,9 @@ public class LakeWorld {
         double wpX;
         double wpY;
         long repathAt;
+        boolean recovering;
+        double recoverSide;
+        double tackSide;
     }
 
     // ---- Islands ----------------------------------------------------------

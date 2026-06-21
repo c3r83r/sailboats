@@ -29,4 +29,6 @@ public class BoatState {
     private int deaths;
     // AI boat flag: true for server-controlled bots, false for human players.
     private boolean bot;
+    // True once a human has fired a shot; bots only return fire on aggressors.
+    private boolean hasFired;
 }

@@ -20,7 +20,6 @@ const initialState: SimulationState = {
       side: 0,
     },
     anchored: true,
-    jibButterfly: false,
   },
   boats: [],
   projectiles: [],

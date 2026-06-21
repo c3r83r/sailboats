@@ -173,8 +173,8 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
       const anchored = !!boat.anchored;
       const sunk = !!boat.sunk;
       const health = boat.health ?? 100;
-      const jib = isPlayer && this.controls ? this.controls.jib : this.deriveAutoSail(boat.sailTrim);
-      const main = isPlayer && this.controls ? this.controls.main : this.deriveAutoSail(boat.sailTrim);
+      const jib = isPlayer && this.controls ? this.controls.jib : this.deriveAutoSail(boat.sailTrim, boat.heading);
+      const main = isPlayer && this.controls ? this.controls.main : this.deriveAutoSail(boat.sailTrim, boat.heading);
       const rudder = isPlayer && this.controls ? this.controls.rudder : boat.rudder;
 
       // Other boats fall back to a generic trimmed look since we don't have their helm state.
@@ -258,20 +258,21 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
     this.drawCannons(ctx);
     this.drawRudder(ctx, anchored ? 0 : rudder);
 
-    // Wing-on-wing ("na motyla") is now a deliberate helm action (M), so only the
-    // player's boat carries the butterfly flag. Near dead downwind the mainsail
-    // stays to leeward (bigger sail, sets the side); the jib either wings out to
-    // the opposite windward side on a whisker pole, or - when not winged - just
-    // luffs in the main's wind shadow instead of being furled.
+    // Wing-on-wing ("na motyla"): the jib carries a side it has been thrown to
+    // with M and held by the whisker pole. It is winged (filling) when that side
+    // is to windward, opposite the leeward main. On a gybe only the main swaps
+    // sides, so the fixed-side jib ends up to leeward and just luffs until it is
+    // re-winged. Other boats report no side, so they never goose-wing.
     const runZone = Math.cos(windAngleLocal) > Math.cos(this.butterflyArc);
     const jibDeployed = renderJib.deploy >= 0.05;
-    const butterfly = !anchored && jibDeployed && runZone && isPlayer && !!this.controls?.jibButterfly;
+    const jibSide = renderJib.side;
+    const butterfly = !anchored && jibDeployed && runZone && jibSide !== 0 && jibSide === -leewardSign;
 
     let jibToDraw = renderJib;
     let jibStateToDraw = renderJibState;
     if (butterfly) {
-      // Winged to windward (opposite the main), eased well out, filled.
-      jibToDraw = { ...renderJib, sheet: 0.22, side: -leewardSign };
+      // Winged to windward on the whisker pole, eased well out and filled.
+      jibToDraw = { ...renderJib, sheet: 0.22, side: jibSide };
       jibStateToDraw = 'trim';
     } else if (!anchored && jibDeployed && runZone) {
       // Blanketed by the main on a run: luff on the leeward side, don't furl.
@@ -430,22 +431,15 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
 
       const path = this.islandPath(pts);
 
-      // Shallow-water halo around the island so it reads as a hazard.
+      // Shallow-water halo around the island so it reads as a hazard. Follow the
+      // smooth island path so the halo hugs the coastline instead of tracing
+      // hard polygon corners.
       ctx.save();
-      ctx.beginPath();
-      for (let i = 0; i < pts.length; i++) {
-        const p = pts[i];
-        if (i === 0) {
-          ctx.moveTo(p.x, p.y);
-        } else {
-          ctx.lineTo(p.x, p.y);
-        }
-      }
-      ctx.closePath();
       ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
       ctx.strokeStyle = 'rgba(173, 216, 196, 0.45)';
       ctx.lineWidth = 7 * scale;
-      ctx.stroke();
+      ctx.stroke(path);
       ctx.restore();
 
       let maxR = 0;
@@ -1101,13 +1095,20 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
     ctx.restore();
   }
 
-  private deriveAutoSail(trim: number): SailControl {
-    // Other boats only report their net drive (sailTrim), not helm state. Keep
-    // their sails fully hoisted so they read clearly, and let the sheet reflect
-    // the drive rather than shrinking the canvas when they sail slowly.
+  private deriveAutoSail(trim: number, heading: number): SailControl {
+    // Other boats only report their net drive (sailTrim), not helm state. Bots
+    // autotrim, so we set their sheets to the optimum for their current point of
+    // sail - eased right out on a run, hauled in close-hauled - mirroring the
+    // player's optimalSheet curve so their sails always read as perfectly set.
+    const windFrom = this.windDir + 180;
+    let beta = (((heading - windFrom) % 360) + 360) % 360;
+    if (beta > 180) {
+      beta = 360 - beta; // 0 = head to wind, 90 = beam reach, 180 = dead run
+    }
+    const optimalSheet = this.clamp(1 - (beta - 30) / 130, 0, 1);
     return {
       deploy: 1,
-      sheet: this.clamp(0.3 + trim * 0.7, 0, 1),
+      sheet: trim > 0.05 ? optimalSheet : this.clamp(0.3 + trim * 0.7, 0, 1),
       side: 0,
     };
   }
