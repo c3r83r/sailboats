@@ -1,0 +1,24 @@
+package com.sailboats.simulation.model;
+
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+@Data
+@AllArgsConstructor
+@NoArgsConstructor
+public class BoatState {
+    private String boatId;
+    private double x;
+    private double y;
+    private double heading;
+    private double speed;
+    private double rudder;
+    private double sailTrim;
+    private boolean anchored;
+    // Combat state: hull integrity 0..100, sinking flag and timers.
+    private double health;
+    private boolean sunk;
+    private long sunkAt;
+    private long lastFireAt;
+}

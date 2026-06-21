@@ -1,0 +1,30 @@
+databaseChangeLog:
+  - changeSet:
+      id: fleet-001-create-boats
+      author: copilot
+      changes:
+        - createTable:
+            tableName: boats
+            columns:
+              - column:
+                  name: id
+                  type: BIGSERIAL
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: code
+                  type: VARCHAR(64)
+                  constraints:
+                    nullable: false
+                    unique: true
+              - column:
+                  name: skipper
+                  type: VARCHAR(120)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: boat_class
+                  type: VARCHAR(80)
+                  constraints:
+                    nullable: false

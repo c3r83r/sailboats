@@ -1,0 +1,43 @@
+databaseChangeLog:
+  - changeSet:
+      id: telemetry-001-create-events
+      author: copilot
+      changes:
+        - createTable:
+            tableName: telemetry_events
+            columns:
+              - column:
+                  name: id
+                  type: BIGINT
+                  autoIncrement: true
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: boat_id
+                  type: VARCHAR(64)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: event_type
+                  type: VARCHAR(64)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: payload
+                  type: VARCHAR(2000)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: DATETIME2
+                  constraints:
+                    nullable: false
+  - changeSet:
+      id: telemetry-002-alter-created-at-to-datetimeoffset
+      author: copilot
+      changes:
+        - modifyDataType:
+            tableName: telemetry_events
+            columnName: created_at
+            newDataType: DATETIMEOFFSET(6)

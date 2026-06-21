@@ -1,0 +1,44 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: sailboats-postgres
+    environment:
+      POSTGRES_DB: sailboats_fleet
+      POSTGRES_USER: sailboats
+      POSTGRES_PASSWORD: sailboats
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: sailboats-mssql
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "Sailboats!2026"
+    ports:
+      - "1433:1433"
+    volumes:
+      - mssql-data:/var/opt/mssql
+
+  mssql-init:
+    image: mcr.microsoft.com/mssql-tools
+    container_name: sailboats-mssql-init
+    depends_on:
+      - mssql
+    entrypoint: >
+      /bin/bash -c "
+      sleep 25;
+      /opt/mssql-tools/bin/sqlcmd -S mssql -U sa -P Sailboats!2026 -Q \"IF DB_ID('sailboats_telemetry') IS NULL CREATE DATABASE sailboats_telemetry;\";
+      "
+
+  redis:
+    image: redis:7
+    container_name: sailboats-redis
+    ports:
+      - "6379:6379"
+
+volumes:
+  postgres-data:
+  mssql-data:
