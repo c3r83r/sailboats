@@ -3,9 +3,9 @@ services:
     image: postgres:16
     container_name: sailboats-postgres
     environment:
-      POSTGRES_DB: sailboats_fleet
-      POSTGRES_USER: sailboats
-      POSTGRES_PASSWORD: sailboats
+      POSTGRES_DB: ${POSTGRES_DB:-sailboats_fleet}
+      POSTGRES_USER: ${POSTGRES_USER:-sailboats}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sailboats}
     ports:
       - "5432:5432"
     volumes:
@@ -18,7 +18,7 @@ services:
     container_name: sailboats-mssql
     environment:
       ACCEPT_EULA: "Y"
-      MSSQL_SA_PASSWORD: "Sailboats!2026"
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:-Sailboats!2026}
     ports:
       - "1433:1433"
     volumes:
@@ -32,7 +32,7 @@ services:
     entrypoint: >
       /bin/bash -c "
       sleep 25;
-      /opt/mssql-tools/bin/sqlcmd -S mssql -U sa -P Sailboats!2026 -Q \"IF DB_ID('sailboats_telemetry') IS NULL CREATE DATABASE sailboats_telemetry;\";
+      /opt/mssql-tools/bin/sqlcmd -S mssql -U sa -P ${MSSQL_SA_PASSWORD:-Sailboats!2026} -Q \"IF DB_ID('sailboats_telemetry') IS NULL CREATE DATABASE sailboats_telemetry;\";
       "
 
   redis:

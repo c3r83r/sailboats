@@ -5,9 +5,9 @@ spring:
   application:
     name: fleet-service
   datasource:
-    url: jdbc:postgresql://localhost:5432/sailboats_fleet
-    username: sailboats
-    password: sailboats
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/sailboats_fleet}
+    username: ${SPRING_DATASOURCE_USERNAME:sailboats}
+    password: ${SPRING_DATASOURCE_PASSWORD:sailboats}
   jpa:
     hibernate:
       ddl-auto: validate

@@ -5,9 +5,9 @@ spring:
   application:
     name: telemetry-service
   datasource:
-    url: jdbc:sqlserver://localhost:1433;databaseName=sailboats_telemetry;encrypt=true;trustServerCertificate=true
-    username: sa
-    password: Sailboats!2026
+    url: ${SPRING_DATASOURCE_URL:jdbc:sqlserver://localhost:1433;databaseName=sailboats_telemetry;encrypt=true;trustServerCertificate=true}
+    username: ${SPRING_DATASOURCE_USERNAME:sa}
+    password: ${SPRING_DATASOURCE_PASSWORD:Sailboats!2026}
   jpa:
     hibernate:
       ddl-auto: validate

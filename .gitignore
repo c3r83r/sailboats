@@ -12,6 +12,11 @@ frontend/sailboats-ui/dist/
 # Logs
 *.log
 
+# Secrets / local env
+.env
+*.env
+!.env.example
+
 # OS
 .DS_Store
 Thumbs.db

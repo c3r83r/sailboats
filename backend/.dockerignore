@@ -1,0 +1,7 @@
+# Keep build context small and reproducible.
+**/target/
+**/*.iml
+.idea/
+.vscode/
+*.log
+**/.DS_Store

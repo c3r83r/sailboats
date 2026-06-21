@@ -1,0 +1,36 @@
+# Edge proxy: serves the Angular SPA, proxies API + WebSocket to backend
+# containers, and provisions/renews TLS automatically via Let's Encrypt.
+#
+# Configured through environment variables (see .env):
+#   SITE_ADDRESS  e.g. sailboats.com.pl  (use :80 for local HTTP-only testing)
+#   ACME_EMAIL    contact email for Let's Encrypt
+
+{
+	email {$ACME_EMAIL}
+}
+
+{$SITE_ADDRESS} {
+	encode gzip
+
+	# Real-time simulation WebSocket (Caddy upgrades the connection automatically).
+	handle /ws/* {
+		reverse_proxy simulation-service:8083
+	}
+
+	# Fleet REST API.
+	handle /api/fleet/* {
+		reverse_proxy fleet-service:8081
+	}
+
+	# Telemetry REST API (only reachable when the telemetry profile is enabled).
+	handle /api/telemetry/* {
+		reverse_proxy telemetry-service:8082
+	}
+
+	# Angular single-page app: serve static assets, fall back to index.html.
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}

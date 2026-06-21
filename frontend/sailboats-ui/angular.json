@@ -17,13 +17,53 @@
             "tsConfig": "tsconfig.app.json",
             "assets": ["src/favicon.ico", "src/assets"],
             "styles": ["src/styles.css"]
-          }
+          },
+          "configurations": {
+            "production": {
+              "fileReplacements": [
+                {
+                  "replace": "src/environments/environment.ts",
+                  "with": "src/environments/environment.prod.ts"
+                }
+              ],
+              "optimization": true,
+              "outputHashing": "all",
+              "sourceMap": false,
+              "namedChunks": false,
+              "budgets": [
+                {
+                  "type": "initial",
+                  "maximumWarning": "1mb",
+                  "maximumError": "2mb"
+                },
+                {
+                  "type": "anyComponentStyle",
+                  "maximumWarning": "4kb",
+                  "maximumError": "8kb"
+                }
+              ]
+            },
+            "development": {
+              "optimization": false,
+              "sourceMap": true
+            }
+          },
+          "defaultConfiguration": "production"
         },
         "serve": {
           "builder": "@angular-devkit/build-angular:dev-server",
           "options": {
             "buildTarget": "sailboats-ui:build"
-          }
+          },
+          "configurations": {
+            "production": {
+              "buildTarget": "sailboats-ui:build:production"
+            },
+            "development": {
+              "buildTarget": "sailboats-ui:build:development"
+            }
+          },
+          "defaultConfiguration": "development"
         },
         "test": {
           "builder": "@angular-devkit/build-angular:karma",

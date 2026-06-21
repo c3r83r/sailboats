@@ -1,0 +1,139 @@
+# Production stack for a single VPS:
+#   - postgres (fleet + simulation databases)
+#   - simulation-service (WebSocket) + fleet-service (REST)
+#   - caddy edge: serves the Angular SPA, reverse-proxies API/WS, automatic HTTPS
+#   - telemetry-service + mssql are OPTIONAL (enable with: --profile telemetry)
+#
+# Usage:
+#   cp .env.example .env   # then edit secrets + domain
+#   docker compose -f docker-compose.prod.yml up -d --build
+#   # with telemetry (needs ~2 GB extra RAM for MS SQL):
+#   docker compose -f docker-compose.prod.yml --profile telemetry up -d --build
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: sailboats-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sailboats_fleet}
+      POSTGRES_USER: ${POSTGRES_USER:-sailboats}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sailboats}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [sailboats]
+
+  simulation-service:
+    build:
+      context: ./backend
+      args:
+        SERVICE: simulation-service
+    image: sailboats/simulation-service
+    container_name: sailboats-simulation
+    restart: unless-stopped
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/sailboats_simulation
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-sailboats}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      APP_CORS_ALLOWED_ORIGINS: ${APP_CORS_ALLOWED_ORIGINS}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [sailboats]
+
+  fleet-service:
+    build:
+      context: ./backend
+      args:
+        SERVICE: fleet-service
+    image: sailboats/fleet-service
+    container_name: sailboats-fleet
+    restart: unless-stopped
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/sailboats_fleet
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-sailboats}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [sailboats]
+
+  telemetry-service:
+    build:
+      context: ./backend
+      args:
+        SERVICE: telemetry-service
+    image: sailboats/telemetry-service
+    container_name: sailboats-telemetry
+    restart: unless-stopped
+    profiles: [telemetry]
+    environment:
+      SPRING_DATASOURCE_URL: "jdbc:sqlserver://mssql:1433;databaseName=sailboats_telemetry;encrypt=true;trustServerCertificate=true"
+      SPRING_DATASOURCE_USERNAME: sa
+      SPRING_DATASOURCE_PASSWORD: ${MSSQL_SA_PASSWORD:?set MSSQL_SA_PASSWORD in .env}
+    depends_on:
+      - mssql-init
+    networks: [sailboats]
+
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: sailboats-mssql
+    restart: unless-stopped
+    profiles: [telemetry]
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:?set MSSQL_SA_PASSWORD in .env}
+    volumes:
+      - mssql-data:/var/opt/mssql
+    networks: [sailboats]
+
+  mssql-init:
+    image: mcr.microsoft.com/mssql-tools
+    container_name: sailboats-mssql-init
+    profiles: [telemetry]
+    depends_on:
+      - mssql
+    entrypoint: >
+      /bin/bash -c "
+      sleep 25;
+      /opt/mssql-tools/bin/sqlcmd -S mssql -U sa -P \"$MSSQL_SA_PASSWORD\" -Q \"IF DB_ID('sailboats_telemetry') IS NULL CREATE DATABASE sailboats_telemetry;\";
+      "
+    environment:
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:?set MSSQL_SA_PASSWORD in .env}
+    networks: [sailboats]
+
+  edge:
+    build:
+      context: ./frontend/sailboats-ui
+    image: sailboats/edge
+    container_name: sailboats-edge
+    restart: unless-stopped
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?set SITE_ADDRESS in .env}
+      ACME_EMAIL: ${ACME_EMAIL}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - simulation-service
+      - fleet-service
+    networks: [sailboats]
+
+volumes:
+  postgres-data:
+  mssql-data:
+  caddy-data:
+  caddy-config:
+
+networks:
+  sailboats:
+    driver: bridge

@@ -11,7 +11,7 @@ export class SimulationWsService {
 
   connect(nick?: string): Observable<SimulationSnapshot> {
     if (!this.socket || this.socket.readyState === WebSocket.CLOSED) {
-      const base = environment.simulationWsUrl;
+      const base = environment.simulationWsUrl || this.resolveWsUrl();
       const url = nick ? `${base}?nick=${encodeURIComponent(nick)}` : base;
       this.socket = new WebSocket(url);
 
@@ -28,6 +28,15 @@ export class SimulationWsService {
 
   status$(): Observable<'connected' | 'disconnected'> {
     return this.statusSubject.asObservable();
+  }
+
+  /**
+   * Builds the WebSocket URL from the current page origin so the production
+   * bundle works on any domain behind TLS (https -> wss) without a rebuild.
+   */
+  private resolveWsUrl(): string {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${protocol}//${window.location.host}/ws/simulation`;
   }
 
   sendControls(rudder: number, sailTrim: number, anchored: boolean): void {
