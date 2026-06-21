@@ -10,6 +10,9 @@ export interface BoatState {
   anchored?: boolean;
   health?: number;
   sunk?: boolean;
+  kills?: number;
+  deaths?: number;
+  bot?: boolean;
 }
 
 export type FireSide = 'bow' | 'stern' | 'port' | 'starboard';
@@ -51,6 +54,7 @@ export interface HelmControlState {
   jib: SailControl;
   main: SailControl;
   anchored: boolean; // K key: anchor down -> boat held bow-into-wind
+  jibButterfly: boolean; // M key: jib goose-winged to windward when running
 }
 
 export interface SimulationSnapshot {

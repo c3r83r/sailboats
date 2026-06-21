@@ -58,7 +58,7 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
         <span><b>G</b> staw grot &middot; <b>Shift+G</b> refuj &middot; <b>W</b>/<b>S</b> talia</span>
         <span><b>F</b> staw fok &middot; <b>Shift+F</b> refuj &middot; <b>E</b>/<b>Q</b> szot</span>
         <span><b>&larr;</b>/<b>&rarr;</b> działa burty &middot; <b>&uarr;</b>/<b>&darr;</b> dziób/rufa &middot; trzymaj = dalej</span>
-        <span><b>T</b> auto-trym &middot; <b>K</b> kotwica</span>
+        <span><b>T</b> auto-trym &middot; <b>K</b> kotwica &middot; <b>M</b> motyl (fordewind)</span>
       </div>
 
       <section class="content">
@@ -326,6 +326,7 @@ export class AppComponent implements OnInit, OnDestroy {
     jib: { deploy: 0, sheet: 0, side: 0 },
     main: { deploy: 0, sheet: 0, side: 0 },
     anchored: true,
+    jibButterfly: false,
   };
   playerBoatId: string | null = null;
 
@@ -365,6 +366,8 @@ export class AppComponent implements OnInit, OnDestroy {
 
   // Wind blows straight down the screen (matches the backend constant).
   private readonly windDir = 90;
+  // beta (angle off dead-downwind) at/above which the jib can be winged ("motyl").
+  private readonly BUTTERFLY_BETA = 162;
   private playerHeading = 90;
   private playerSpeed = 0;
 
@@ -430,14 +433,20 @@ export class AppComponent implements OnInit, OnDestroy {
 
   @HostListener('window:keydown', ['$event'])
   onKeyDown(event: KeyboardEvent): void {
-    // Freeze gameplay keys while the welcome screen is up or while typing a nick.
-    if (!this.started || this.isTextInput(event.target)) {
+    // Let text fields (the nick input) keep their own keystrokes.
+    if (this.isTextInput(event.target)) {
       return;
     }
 
     const key = event.key.toLowerCase();
+    // Arrows/space must never scroll the page during play (or between rounds).
     if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(key)) {
       event.preventDefault();
+    }
+
+    // Welcome screen is up: page scroll is already blocked, ignore gameplay keys.
+    if (!this.started) {
+      return;
     }
 
     // Arrow keys aim the guns: charge the chosen side while held, fire on release.
@@ -469,6 +478,15 @@ export class AppComponent implements OnInit, OnDestroy {
     // T toggles the auto-trim assist.
     if (key === 't') {
       this.autoTrim = !this.autoTrim;
+      return;
+    }
+
+    // M wings the jib out to windward when running dead downwind ("na motyla").
+    if (key === 'm') {
+      if (this.controls.jib.deploy >= 0.05 && this.inButterflyZone()) {
+        this.controls = { ...this.controls, jibButterfly: !this.controls.jibButterfly };
+        this.recomputeAndDispatch();
+      }
       return;
     }
 
@@ -531,6 +549,8 @@ export class AppComponent implements OnInit, OnDestroy {
 
   changeLake(): void {
     this.store.dispatch(SimulationActions.changeLake());
+    // Drop focus off the button so arrow/space keys can't re-trigger it.
+    (document.activeElement as HTMLElement | null)?.blur();
   }
 
   start(): void {
@@ -545,6 +565,12 @@ export class AppComponent implements OnInit, OnDestroy {
 
   private tickControls(dt: number): void {
     let next = this.controls;
+
+    // Butterfly only makes sense deep downwind; drop it once we head up.
+    if (this.controls.jibButterfly && !this.inButterflyZone()) {
+      this.controls = { ...this.controls, jibButterfly: false };
+      next = this.controls;
+    }
 
     // Cannons charge up the longer their arrow key is held.
     if (this.chargingSide) {
@@ -684,18 +710,32 @@ export class AppComponent implements OnInit, OnDestroy {
       sideOk: true,
     });
 
-    // Self-tacking jib: it always sits on the leeward side, so it is never
-    // backwinded. It only stops driving when furled or with the sheet eased off.
-    let jib = this.evaluateSail({
-      deploy: controls.jib.deploy,
-      sheet: controls.jib.sheet,
-      optimalSheet,
-      beta,
-      inIrons,
-      sideOk: true,
-    });
-    if (controls.jib.deploy < 0.05 || controls.jib.sheet < 0.05) {
+    // Jib: self-tacking on most points of sail. Dead downwind it is blanketed by
+    // the main, so it luffs (stays up, no drive) unless the helm wings it out to
+    // windward with M ("na motyla"), where it fills and pulls the boat downwind.
+    const runZone = beta >= this.BUTTERFLY_BETA;
+    let jib: { power: number; thrust: number; state: SailVisualState };
+    if (controls.jib.deploy < 0.05) {
       jib = { power: 0, thrust: 0, state: 'down' };
+    } else if (runZone) {
+      if (controls.jibButterfly) {
+        const area = controls.jib.deploy;
+        jib = { power: area * 0.5, thrust: area * 0.9, state: 'trim' };
+      } else {
+        jib = { power: 0, thrust: 0, state: 'luff' };
+      }
+    } else {
+      jib = this.evaluateSail({
+        deploy: controls.jib.deploy,
+        sheet: controls.jib.sheet,
+        optimalSheet,
+        beta,
+        inIrons,
+        sideOk: true,
+      });
+      if (controls.jib.sheet < 0.05) {
+        jib = { power: 0, thrust: 0, state: 'down' };
+      }
     }
 
     // sailTrim is how much sail is actually drawing (area x trim quality). The
@@ -777,6 +817,11 @@ export class AppComponent implements OnInit, OnDestroy {
       return target;
     }
     return value + Math.sign(target - value) * step;
+  }
+
+  private inButterflyZone(): boolean {
+    const windFrom = this.windDir + 180;
+    return this.angleDiff(this.playerHeading, windFrom) >= this.BUTTERFLY_BETA;
   }
 
   private angleDiff(a: number, b: number): number {

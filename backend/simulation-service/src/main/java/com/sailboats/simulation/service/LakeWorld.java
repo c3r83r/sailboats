@@ -59,6 +59,17 @@ public class LakeWorld {
     private static final double PROJECTILE_DAMAGE = 16.0;
     private static final long RESPAWN_MS = 5000;
 
+    // AI bots: each lake is topped up so that roughly half the boats are bots
+    // ("50% graczy stanowia boty"). They wander the lake and hunt human players.
+    private static final int BOT_MAX = 5;
+    private static final double BOT_ENGAGE_RANGE = 7.0;
+    private static final double BOT_FIRE_RANGE = 5.0;
+    private static final double BOT_NOGO_DEG = 42.0;
+    private static final String[] BOT_NAMES = {
+        "Korsarz", "Pirat Rudy", "Czarny Jack", "Kapitan Hak", "Morski Wilk",
+        "Rekin", "Sztorm", "Kraken", "Barakuda", "Mewa"
+    };
+
     private static final double TWO_PI = Math.PI * 2;
 
     // Health pickups: green buoys that patch part of the hull when reached.
@@ -79,6 +90,10 @@ public class LakeWorld {
     private final int capacity;
 
     private final Map<String, BoatState> boats = new ConcurrentHashMap<>();
+
+    // Per-bot AI memory (waypoints / repath timers), keyed by bot boat id.
+    private final Map<String, BotBrain> botBrains = new ConcurrentHashMap<>();
+    private final AtomicLong botSeq = new AtomicLong();
 
     private final List<Projectile> projectiles = new ArrayList<>();
     private final Queue<Projectile> incoming = new ConcurrentLinkedQueue<>();
@@ -117,6 +132,22 @@ public class LakeWorld {
 
     public boolean isEmpty() {
         return boats.isEmpty();
+    }
+
+    /** Number of human (non-bot) boats currently on this lake. */
+    public int humanCount() {
+        int n = 0;
+        for (BoatState boat : boats.values()) {
+            if (!boat.isBot()) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    /** True while at least one human is still on the lake (bots don't keep it alive). */
+    public boolean hasHumans() {
+        return humanCount() > 0;
     }
 
     public void addBoat(String boatId, String name) {
@@ -198,6 +229,7 @@ public class LakeWorld {
 
     /** Advance the world one tick and return a snapshot (without lakeTotal, set by the manager). */
     public SimulationSnapshotDto tick(long now) {
+        maintainBots(now);
         for (BoatState boat : boats.values()) {
             if (boat.isSunk()) {
                 boat.setSpeed(0);
@@ -208,6 +240,11 @@ public class LakeWorld {
             }
 
             double windRad = Math.toRadians(windDirection);
+
+            if (boat.isBot()) {
+                // AI helm: steer, trim and fire before the shared physics runs.
+                botThink(boat, now);
+            }
 
             if (boat.isAnchored()) {
                 double windFrom = windDirection + 180.0;
@@ -349,8 +386,8 @@ public class LakeWorld {
 
                 double aFactor = hitFactor(a.getHeading(), nx, ny);
                 double bFactor = hitFactor(b.getHeading(), -nx, -ny);
-                applyDamage(a, COLLISION_DAMAGE_SCALE * closing * aFactor, now);
-                applyDamage(b, COLLISION_DAMAGE_SCALE * closing * bFactor, now);
+                applyDamage(a, COLLISION_DAMAGE_SCALE * closing * aFactor, now, b.getBoatId());
+                applyDamage(b, COLLISION_DAMAGE_SCALE * closing * bFactor, now, a.getBoatId());
             }
         }
     }
@@ -387,7 +424,7 @@ public class LakeWorld {
                 double dx = boat.getX() - p.x;
                 double dy = boat.getY() - p.y;
                 if (dx * dx + dy * dy < BOAT_HIT_RADIUS * BOAT_HIT_RADIUS) {
-                    applyDamage(boat, PROJECTILE_DAMAGE, now);
+                    applyDamage(boat, PROJECTILE_DAMAGE, now, p.ownerId);
                     hit = true;
                     break;
                 }
@@ -400,7 +437,7 @@ public class LakeWorld {
         projectiles.addAll(survivors);
     }
 
-    private void applyDamage(BoatState boat, double amount, long now) {
+    private void applyDamage(BoatState boat, double amount, long now, String attackerId) {
         if (boat.isSunk() || amount <= 0) {
             return;
         }
@@ -410,6 +447,14 @@ public class LakeWorld {
             boat.setSunk(true);
             boat.setSunkAt(now);
             boat.setSpeed(0);
+            boat.setDeaths(boat.getDeaths() + 1);
+            // Credit the sink to the attacker (cannon fire or ramming).
+            if (attackerId != null && !attackerId.equals(boat.getBoatId())) {
+                BoatState killer = boats.get(attackerId);
+                if (killer != null) {
+                    killer.setKills(killer.getKills() + 1);
+                }
+            }
         } else {
             boat.setHealth(next);
         }
@@ -432,6 +477,9 @@ public class LakeWorld {
                 .anchored(boat.isAnchored())
                 .health(boat.getHealth())
                 .sunk(boat.isSunk())
+                .kills(boat.getKills())
+                .deaths(boat.getDeaths())
+                .bot(boat.isBot())
                 .build()).toList())
             .projectiles(projectiles.stream().map(p -> ProjectileDto.builder()
                 .id(p.id)
@@ -443,7 +491,7 @@ public class LakeWorld {
             .islands(islandDtos)
             .lakeId(lakeId)
             .lakeName(lakeName)
-            .lakeBoats(boats.size())
+            .lakeBoats(humanCount())
             .lakeCapacity(capacity)
             .build();
     }
@@ -451,6 +499,164 @@ public class LakeWorld {
     private double normalizeHeading(double heading) {
         double normalized = heading % 360;
         return normalized < 0 ? normalized + 360 : normalized;
+    }
+
+    // ---- AI bots ----------------------------------------------------------
+
+    // Keep bot numbers at ~50% of the lake population: one bot per human, capped.
+    private void maintainBots(long now) {
+        int humans = humanCount();
+        int bots = boats.size() - humans;
+        if (humans == 0) {
+            if (bots > 0) {
+                removeAllBots();
+            }
+            return;
+        }
+        int desired = Math.min(BOT_MAX, humans);
+        while (bots < desired) {
+            spawnBot();
+            bots++;
+        }
+        while (bots > desired) {
+            despawnOneBot();
+            bots--;
+        }
+    }
+
+    private void spawnBot() {
+        long seq = botSeq.incrementAndGet();
+        String id = "bot-" + lakeId + "-" + seq;
+        BoatState boat = new BoatState();
+        boat.setBoatId(id);
+        boat.setName(BOT_NAMES[(int) (seq % BOT_NAMES.length)]);
+        boat.setBot(true);
+        double[] spot = randomFreePosition();
+        boat.setX(spot[0]);
+        boat.setY(spot[1]);
+        boat.setHeading(ThreadLocalRandom.current().nextDouble() * 360.0);
+        boat.setSpeed(0);
+        boat.setRudder(0);
+        boat.setSailTrim(0.8);
+        boat.setAnchored(false);
+        boat.setHealth(100);
+        boat.setSunk(false);
+        boats.put(id, boat);
+        botBrains.put(id, new BotBrain());
+    }
+
+    private void despawnOneBot() {
+        for (BoatState boat : boats.values()) {
+            if (boat.isBot()) {
+                boats.remove(boat.getBoatId());
+                botBrains.remove(boat.getBoatId());
+                return;
+            }
+        }
+    }
+
+    private void removeAllBots() {
+        boats.values().removeIf(BoatState::isBot);
+        botBrains.clear();
+    }
+
+    // One AI step: pick a heading (hunt the nearest human or wander), steer the
+    // rudder toward it, keep the sails drawing and loose a broadside when in range.
+    private void botThink(BoatState bot, long now) {
+        bot.setAnchored(false);
+        double windFrom = windDirection + 180.0;
+
+        BoatState target = nearestEnemy(bot);
+        double targetHeading;
+        if (target != null) {
+            double dx = target.getX() - bot.getX();
+            double dy = target.getY() - bot.getY();
+            double d = Math.hypot(dx, dy);
+            double bearing = Math.toDegrees(Math.atan2(dy, dx));
+            if (d <= BOT_FIRE_RANGE) {
+                // Close: hold the target on the beam to bring a broadside to bear.
+                targetHeading = bearing - 90.0;
+                botMaybeFire(bot, target, d, now);
+            } else {
+                // Chase the player down.
+                targetHeading = bearing;
+            }
+        } else {
+            targetHeading = botWanderHeading(bot, now);
+        }
+
+        // Never steer straight into the no-go zone; bear off to close-hauled.
+        targetHeading = avoidIrons(targetHeading, windFrom);
+
+        double err = signedDelta(targetHeading, bot.getHeading());
+        bot.setRudder(Math.max(-1.0, Math.min(1.0, err / 45.0)));
+        bot.setSailTrim(0.85);
+    }
+
+    private BoatState nearestEnemy(BoatState bot) {
+        BoatState best = null;
+        double bestD = Double.MAX_VALUE;
+        for (BoatState other : boats.values()) {
+            if (other == bot || other.isSunk() || other.isBot()) {
+                continue; // bots hunt humans, not each other
+            }
+            double dx = other.getX() - bot.getX();
+            double dy = other.getY() - bot.getY();
+            double d = dx * dx + dy * dy;
+            if (d < bestD) {
+                bestD = d;
+                best = other;
+            }
+        }
+        return best;
+    }
+
+    private double botWanderHeading(BoatState bot, long now) {
+        BotBrain brain = botBrains.computeIfAbsent(bot.getBoatId(), id -> new BotBrain());
+        double dx = brain.wpX - bot.getX();
+        double dy = brain.wpY - bot.getY();
+        if (now >= brain.repathAt || dx * dx + dy * dy < 2.0) {
+            double[] spot = randomFreePosition();
+            brain.wpX = spot[0];
+            brain.wpY = spot[1];
+            brain.repathAt = now + 6000 + (long) (ThreadLocalRandom.current().nextDouble() * 6000);
+            dx = brain.wpX - bot.getX();
+            dy = brain.wpY - bot.getY();
+        }
+        return Math.toDegrees(Math.atan2(dy, dx));
+    }
+
+    private double avoidIrons(double heading, double windFrom) {
+        double diff = signedDelta(heading, windFrom);
+        if (Math.abs(diff) < BOT_NOGO_DEG) {
+            return normalizeHeading(windFrom + (diff >= 0 ? BOT_NOGO_DEG : -BOT_NOGO_DEG));
+        }
+        return normalizeHeading(heading);
+    }
+
+    private void botMaybeFire(BoatState bot, BoatState target, double d, long now) {
+        if (d > BOT_FIRE_RANGE || now - bot.getLastFireAt() < FIRE_COOLDOWN_MS) {
+            return;
+        }
+        double bearing = Math.toDegrees(Math.atan2(target.getY() - bot.getY(), target.getX() - bot.getX()));
+        double rel = signedDelta(bearing, bot.getHeading());
+        double a = Math.abs(rel);
+        String side;
+        if (a < 30.0) {
+            side = "bow";
+        } else if (a > 150.0) {
+            side = "stern";
+        } else {
+            side = rel > 0 ? "starboard" : "port";
+        }
+        fire(bot.getBoatId(), side, 0.6 + ThreadLocalRandom.current().nextDouble() * 0.4);
+    }
+
+    // Per-bot navigation memory.
+    private static final class BotBrain {
+        double wpX;
+        double wpY;
+        long repathAt;
     }
 
     // ---- Islands ----------------------------------------------------------
@@ -559,7 +765,7 @@ public class LakeWorld {
                 boat.setSpeed(impact * 0.25);
                 if (impact > 0.15 && now - boat.getLastGroundAt() >= ISLAND_GROUND_INTERVAL_MS) {
                     boat.setLastGroundAt(now);
-                    applyDamage(boat, ISLAND_GROUND_DAMAGE, now);
+                    applyDamage(boat, ISLAND_GROUND_DAMAGE, now, null);
                 }
             }
         }

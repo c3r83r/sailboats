@@ -386,6 +386,7 @@ export class ControlPanelComponent {
     jib: { deploy: 0, sheet: 0, side: 0 },
     main: { deploy: 0, sheet: 0, side: 0 },
     anchored: true,
+    jibButterfly: false,
   };
   @Input() mainThrust = 0;
   @Input() jibThrust = 0;

@@ -14,6 +14,9 @@ public record BoatStateDto(
     double sailTrim,
     boolean anchored,
     double health,
-    boolean sunk
+    boolean sunk,
+    int kills,
+    int deaths,
+    boolean bot
 ) {
 }

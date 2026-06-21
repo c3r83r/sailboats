@@ -58,9 +58,9 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
   private cssHeight = 0;
   // Stable leeward side near dead-downwind so the rig doesn't flip every frame.
   private leewardHysteresis = 1;
-  // Half-arc (rad) around dead downwind where the jib is goose-winged ("na motyla").
-  // Only a course very close to 0 deg (dead run) should wing the jib.
-  private readonly butterflyArc = (12 * Math.PI) / 180;
+  // Half-arc (rad) around dead downwind where the jib can be goose-winged
+  // ("na motyla"); matches BUTTERFLY_BETA (162 deg) on the helm side.
+  private readonly butterflyArc = (18 * Math.PI) / 180;
 
   private readonly worldWidth = 20;
   private readonly worldHeight = 20;
@@ -191,7 +191,7 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
       }
       this.drawHealthBar(ctx, x, y, scale, health, sunk);
 
-      ctx.fillStyle = isPlayer ? '#ffe19a' : 'rgba(248, 251, 255, 0.92)';
+      ctx.fillStyle = isPlayer ? '#ffe19a' : boat.bot ? 'rgba(255, 180, 180, 0.92)' : 'rgba(248, 251, 255, 0.92)';
       ctx.font = `${Math.max(10, 13 * scale)}px Segoe UI`;
       ctx.fillText(boat.name ?? boat.boatId, x + 14 * scale, y - 14 * scale);
     }
@@ -201,6 +201,7 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
     ctx.restore();
     this.drawLakeBorder(ctx, lake);
     this.drawWindLabel(ctx, lake);
+    this.drawScoreboard(ctx, lake);
   }
 
   private drawBoat(
@@ -257,28 +258,32 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
     this.drawCannons(ctx);
     this.drawRudder(ctx, anchored ? 0 : rudder);
 
-    // Wing-on-wing ("na motyla"): running close to dead downwind the mainsail
-    // stays to leeward (it is the bigger sail and sets the side) while the jib is
-    // goose-winged out to the opposite, windward side on a whisker pole.
-    const running = Math.cos(windAngleLocal) > Math.cos(this.butterflyArc);
+    // Wing-on-wing ("na motyla") is now a deliberate helm action (M), so only the
+    // player's boat carries the butterfly flag. Near dead downwind the mainsail
+    // stays to leeward (bigger sail, sets the side); the jib either wings out to
+    // the opposite windward side on a whisker pole, or - when not winged - just
+    // luffs in the main's wind shadow instead of being furled.
+    const runZone = Math.cos(windAngleLocal) > Math.cos(this.butterflyArc);
     const jibDeployed = renderJib.deploy >= 0.05;
-    const butterfly = !anchored && running && jibDeployed;
+    const butterfly = !anchored && jibDeployed && runZone && isPlayer && !!this.controls?.jibButterfly;
 
     let jibToDraw = renderJib;
     let jibStateToDraw = renderJibState;
-    let jibLeewardSign = leewardSign;
     if (butterfly) {
-      jibLeewardSign = -leewardSign; // windward, opposite the mainsail
-      jibStateToDraw = 'trim'; // the winged jib fills instead of luffing/furling
-      // Ease it well out so the clew clearly wings to the side as a butterfly.
-      jibToDraw = { ...renderJib, sheet: 0.22 };
+      // Winged to windward (opposite the main), eased well out, filled.
+      jibToDraw = { ...renderJib, sheet: 0.22, side: -leewardSign };
+      jibStateToDraw = 'trim';
+    } else if (!anchored && jibDeployed && runZone) {
+      // Blanketed by the main on a run: luff on the leeward side, don't furl.
+      jibToDraw = { ...renderJib, side: leewardSign };
+      jibStateToDraw = 'luff';
     }
 
     // Heeled boats lean their rig to leeward; we model that with a small y-shear.
     ctx.save();
     const shear = this.clamp(heel, -1, 1) * 0.18;
     ctx.transform(1, 0, shear, 1, 0, 0);
-    this.drawJibSail(ctx, jibToDraw, renderSpeed, jibLeewardSign, jibStateToDraw, windAngleLocal, butterfly);
+    this.drawJibSail(ctx, jibToDraw, renderSpeed, leewardSign, jibStateToDraw, windAngleLocal, butterfly);
     this.drawMainSail(ctx, renderMain, renderSpeed, leewardSign, renderMainState, windAngleLocal);
     this.drawMast(ctx);
     ctx.restore();
@@ -628,6 +633,56 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
     ctx.fillStyle = 'rgba(198, 236, 255, 0.65)';
     ctx.font = `${Math.max(10, lake.width / 78)}px Segoe UI`;
     ctx.fillText('Wiatr: staly, z gory na dol', lake.x + 12, lake.y + 20);
+  }
+
+  // Compact kills/deaths leaderboard ("Z" = zwyciestwa, "S" = smierci) drawn in
+  // the top-right corner, sorted by kills, with the player and bots highlighted.
+  private drawScoreboard(ctx: CanvasRenderingContext2D, lake: LakeRect): void {
+    if (!this.boats.length) {
+      return;
+    }
+    const rows = [...this.boats]
+      .sort((a, b) => (b.kills ?? 0) - (a.kills ?? 0) || (a.deaths ?? 0) - (b.deaths ?? 0))
+      .slice(0, 8);
+
+    const pad = 8;
+    const lh = Math.max(14, lake.width / 60);
+    const w = Math.max(168, lake.width * 0.21);
+    const h = pad * 2 + lh * (rows.length + 1);
+    const x = lake.x + lake.width - w - 12;
+    const y = lake.y + 12;
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(8, 20, 34, 0.55)';
+    this.roundedRect(ctx, x, y, w, h, 8);
+    ctx.fill();
+
+    ctx.textBaseline = 'middle';
+    ctx.font = `600 ${lh * 0.78}px Segoe UI`;
+    ctx.fillStyle = 'rgba(198, 236, 255, 0.9)';
+    ctx.fillText('Tablica wynikow', x + pad, y + pad + lh * 0.5);
+    ctx.textAlign = 'right';
+    ctx.fillText('Z / S', x + w - pad, y + pad + lh * 0.5);
+    ctx.textAlign = 'left';
+
+    let i = 1;
+    for (const b of rows) {
+      const cy = y + pad + lh * (i + 0.5);
+      const isP = b.boatId === this.playerBoatId;
+      ctx.font = `${isP ? '700' : '400'} ${lh * 0.78}px Segoe UI`;
+      ctx.fillStyle = isP ? '#ffe19a' : b.bot ? 'rgba(255, 180, 180, 0.92)' : 'rgba(248, 251, 255, 0.9)';
+      const base = (b.name ?? b.boatId).slice(0, b.bot ? 10 : 14);
+      const label = b.bot ? `${base} (bot)` : base;
+      ctx.fillText(label, x + pad, cy);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = 'rgba(232, 244, 255, 0.92)';
+      ctx.fillText(`${b.kills ?? 0} / ${b.deaths ?? 0}`, x + w - pad, cy);
+      ctx.textAlign = 'left';
+      i++;
+    }
+
+    ctx.textBaseline = 'alphabetic';
+    ctx.restore();
   }
 
   private drawPlaceholderBoat(ctx: CanvasRenderingContext2D, lake: LakeRect, scale: number): void {

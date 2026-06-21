@@ -220,8 +220,9 @@ public class SimulationEngine {
             return;
         }
         world.removeBoat(boatId);
-        if (world.isEmpty()) {
-            // Last one out: drop the in-memory world and park the lake as inactive.
+        if (!world.hasHumans()) {
+            // Last human out: drop the in-memory world (and its bots) and park the
+            // lake as inactive.
             worlds.remove(lakeId);
             lakeRepository.findById(UUID.fromString(lakeId)).ifPresent(lake -> {
                 lake.setActive(false);
