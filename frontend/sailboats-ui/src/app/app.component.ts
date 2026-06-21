@@ -725,6 +725,10 @@ export class AppComponent implements OnInit, OnDestroy {
         jib = { power: 0, thrust: 0, state: 'luff' };
       }
     } else {
+      // A raised jib (deploy >= 0.05) is never furled by trim alone: dumping the
+      // sheet makes it luff, it does not roll the sail away. evaluateSail already
+      // returns 'luff' for a slack sheet, so the jib stays visible on every point
+      // of sail instead of briefly vanishing when the sheet is eased right out.
       jib = this.evaluateSail({
         deploy: controls.jib.deploy,
         sheet: controls.jib.sheet,
@@ -733,9 +737,6 @@ export class AppComponent implements OnInit, OnDestroy {
         inIrons,
         sideOk: true,
       });
-      if (controls.jib.sheet < 0.05) {
-        jib = { power: 0, thrust: 0, state: 'down' };
-      }
     }
 
     // sailTrim is how much sail is actually drawing (area x trim quality). The
