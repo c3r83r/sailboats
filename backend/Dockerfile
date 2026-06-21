@@ -4,6 +4,7 @@
 # ---- Stage 1: build all modules once (layer-cached across services) ----
 FROM maven:3.9-eclipse-temurin-21 AS build
 WORKDIR /workspace
+ARG SERVICE
 
 # Resolve dependencies first so they are cached unless a pom.xml changes.
 COPY pom.xml .
@@ -18,7 +19,11 @@ COPY common-lib/src common-lib/src
 COPY simulation-service/src simulation-service/src
 COPY fleet-service/src fleet-service/src
 COPY telemetry-service/src telemetry-service/src
-RUN mvn -B -q -DskipTests clean package
+
+# Build a runnable Spring Boot jar for the selected service.
+# `spring-boot:repackage` adds the Main-Class/launcher and nested dependencies.
+RUN mvn -B -q -DskipTests -pl common-lib clean install \
+ && mvn -B -q -DskipTests -f ${SERVICE}/pom.xml clean package spring-boot:repackage
 
 # ---- Stage 2: slim runtime image with only the selected service jar ----
 FROM eclipse-temurin:21-jre AS runtime

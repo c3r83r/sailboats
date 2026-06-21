@@ -23,7 +23,7 @@ services:
       - postgres-data:/var/lib/postgresql/data
       - ./docker/postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sailboats}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sailboats} -d ${POSTGRES_DB:-sailboats_fleet}"]
       interval: 10s
       timeout: 5s
       retries: 5
