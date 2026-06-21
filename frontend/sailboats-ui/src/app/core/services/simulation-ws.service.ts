@@ -9,9 +9,11 @@ export class SimulationWsService {
   private snapshotSubject = new Subject<SimulationSnapshot>();
   private statusSubject = new Subject<'connected' | 'disconnected'>();
 
-  connect(): Observable<SimulationSnapshot> {
+  connect(nick?: string): Observable<SimulationSnapshot> {
     if (!this.socket || this.socket.readyState === WebSocket.CLOSED) {
-      this.socket = new WebSocket(environment.simulationWsUrl);
+      const base = environment.simulationWsUrl;
+      const url = nick ? `${base}?nick=${encodeURIComponent(nick)}` : base;
+      this.socket = new WebSocket(url);
 
       this.socket.onopen = () => this.statusSubject.next('connected');
       this.socket.onclose = () => this.statusSubject.next('disconnected');
@@ -43,5 +45,13 @@ export class SimulationWsService {
     }
 
     this.socket.send(JSON.stringify({ type: 'fire', side, power }));
+  }
+
+  sendChangeLake(): void {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    this.socket.send(JSON.stringify({ type: 'changeLake' }));
   }
 }

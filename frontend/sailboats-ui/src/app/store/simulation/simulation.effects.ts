@@ -9,9 +9,9 @@ export class SimulationEffects {
   connect$ = createEffect(() =>
     this.actions$.pipe(
       ofType(SimulationActions.connect),
-      mergeMap(() =>
+      mergeMap(({ nick }) =>
         merge(
-          this.simulationWsService.connect().pipe(
+          this.simulationWsService.connect(nick).pipe(
             map((snapshot) => SimulationActions.snapshotReceived({ snapshot }))
           ),
           this.simulationWsService.status$().pipe(
@@ -38,6 +38,15 @@ export class SimulationEffects {
       this.actions$.pipe(
         ofType(SimulationActions.fire),
         tap(({ side, power }) => this.simulationWsService.sendFire(side, power))
+      ),
+    { dispatch: false }
+  );
+
+  changeLake$ = createEffect(
+    () =>
+      this.actions$.pipe(
+        ofType(SimulationActions.changeLake),
+        tap(() => this.simulationWsService.sendChangeLake())
       ),
     { dispatch: false }
   );

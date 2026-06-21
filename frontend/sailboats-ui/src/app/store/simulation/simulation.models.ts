@@ -1,5 +1,6 @@
 export interface BoatState {
   boatId: string;
+  name?: string;
   x: number;
   y: number;
   heading: number;
@@ -18,6 +19,22 @@ export interface Projectile {
   ownerId: string;
   x: number;
   y: number;
+}
+
+export interface Buoy {
+  id: string;
+  x: number;
+  y: number;
+}
+
+export interface IslandPoint {
+  x: number;
+  y: number;
+}
+
+export interface Island {
+  id: string;
+  points: IslandPoint[];
 }
 
 export type SailSlot = 'jib' | 'main';
@@ -42,7 +59,14 @@ export interface SimulationSnapshot {
   windStrength: number;
   boats: BoatState[];
   projectiles?: Projectile[];
+  buoys?: Buoy[];
+  islands?: Island[];
   yourBoatId?: string;
+  lakeId?: string;
+  lakeName?: string;
+  lakeBoats?: number;
+  lakeCapacity?: number;
+  lakeTotal?: number;
 }
 
 export interface SimulationState {
@@ -50,7 +74,14 @@ export interface SimulationState {
   controls: HelmControlState;
   boats: BoatState[];
   projectiles: Projectile[];
+  buoys: Buoy[];
+  islands: Island[];
   playerBoatId: string | null;
   windDirection: number;
   windStrength: number;
+  lakeId: string | null;
+  lakeName: string | null;
+  lakeBoats: number;
+  lakeCapacity: number;
+  lakeTotal: number;
 }

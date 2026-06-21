@@ -9,6 +9,7 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 public class BoatState {
     private String boatId;
+    private String name;
     private double x;
     private double y;
     private double heading;
@@ -21,4 +22,6 @@ public class BoatState {
     private boolean sunk;
     private long sunkAt;
     private long lastFireAt;
+    // Throttles grounding damage so running aground grinds the hull gradually.
+    private long lastGroundAt;
 }

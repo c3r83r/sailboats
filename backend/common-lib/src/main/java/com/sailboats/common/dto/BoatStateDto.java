@@ -5,6 +5,7 @@ import lombok.Builder;
 @Builder
 public record BoatStateDto(
     String boatId,
+    String name,
     double x,
     double y,
     double heading,

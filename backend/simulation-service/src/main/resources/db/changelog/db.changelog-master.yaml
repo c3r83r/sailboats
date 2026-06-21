@@ -1,0 +1,76 @@
+databaseChangeLog:
+  - changeSet:
+      id: simulation-001-create-lakes
+      author: copilot
+      changes:
+        - createTable:
+            tableName: lakes
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: name
+                  type: VARCHAR(80)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: seed
+                  type: BIGINT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: capacity
+                  type: INT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: active
+                  type: BOOLEAN
+                  defaultValueBoolean: true
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+  - changeSet:
+      id: simulation-002-create-lake-members
+      author: copilot
+      changes:
+        - createTable:
+            tableName: lake_members
+            columns:
+              - column:
+                  name: boat_id
+                  type: VARCHAR(80)
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: lake_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: joined_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+        - createIndex:
+            indexName: idx_lake_members_lake_id
+            tableName: lake_members
+            columns:
+              - column:
+                  name: lake_id
+        - addForeignKeyConstraint:
+            constraintName: fk_lake_members_lake
+            baseTableName: lake_members
+            baseColumnNames: lake_id
+            referencedTableName: lakes
+            referencedColumnNames: id
+            onDelete: CASCADE

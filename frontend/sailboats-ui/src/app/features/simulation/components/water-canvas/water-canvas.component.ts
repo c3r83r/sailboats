@@ -1,6 +1,6 @@
 import { CommonModule } from '@angular/common';
 import { AfterViewInit, Component, ElementRef, Input, OnChanges, OnDestroy, ViewChild } from '@angular/core';
-import { BoatState, HelmControlState, Projectile, SailControl } from '../../../../store/simulation/simulation.models';
+import { BoatState, Buoy, HelmControlState, Island, Projectile, SailControl } from '../../../../store/simulation/simulation.models';
 
 type LakeRect = { x: number; y: number; width: number; height: number; radius: number };
 type WindParticle = { x: number; y: number; speedNorm: number; drift: number; length: number; alpha: number };
@@ -18,8 +18,8 @@ type BoatColor = { light: string; dark: string; edge: string; flag: string };
     .canvas-wrap {
       position: relative;
       width: 100%;
-      max-width: calc(74vh * 1.6);
-      aspect-ratio: 16 / 10;
+      max-width: calc(82vh * 1.78);
+      aspect-ratio: 16 / 9;
       margin: 0 auto;
       border-radius: 18px;
       overflow: hidden;
@@ -38,6 +38,8 @@ type BoatColor = { light: string; dark: string; edge: string; flag: string };
 export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy {
   @Input() boats: BoatState[] = [];
   @Input() projectiles: Projectile[] = [];
+  @Input() buoys: Buoy[] = [];
+  @Input() islands: Island[] = [];
   @Input() playerBoatId: string | null = null;
   @Input() controls: HelmControlState | null = null;
   @Input() mainState: SailVisualState = 'down';
@@ -56,6 +58,9 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
   private cssHeight = 0;
   // Stable leeward side near dead-downwind so the rig doesn't flip every frame.
   private leewardHysteresis = 1;
+  // Half-arc (rad) around dead downwind where the jib is goose-winged ("na motyla").
+  // Only a course very close to 0 deg (dead run) should wing the jib.
+  private readonly butterflyArc = (12 * Math.PI) / 180;
 
   private readonly worldWidth = 20;
   private readonly worldHeight = 20;
@@ -148,6 +153,9 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
     ctx.save();
     this.clipLake(ctx, lake);
     this.drawWaterGrid(ctx, lake);
+    this.drawIslands(ctx, lake, scale);
+    this.drawBuoys(ctx, lake, scale);
+    // Wind blows over the islands too, so draw the particles on top of them.
     this.drawWindParticles(ctx);
 
     if (!this.boats.length) {
@@ -185,7 +193,7 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
 
       ctx.fillStyle = isPlayer ? '#ffe19a' : 'rgba(248, 251, 255, 0.92)';
       ctx.font = `${Math.max(10, 13 * scale)}px Segoe UI`;
-      ctx.fillText(boat.boatId, x + 14 * scale, y - 14 * scale);
+      ctx.fillText(boat.name ?? boat.boatId, x + 14 * scale, y - 14 * scale);
     }
 
     this.drawProjectiles(ctx, lake, scale);
@@ -249,11 +257,28 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
     this.drawCannons(ctx);
     this.drawRudder(ctx, anchored ? 0 : rudder);
 
+    // Wing-on-wing ("na motyla"): running close to dead downwind the mainsail
+    // stays to leeward (it is the bigger sail and sets the side) while the jib is
+    // goose-winged out to the opposite, windward side on a whisker pole.
+    const running = Math.cos(windAngleLocal) > Math.cos(this.butterflyArc);
+    const jibDeployed = renderJib.deploy >= 0.05;
+    const butterfly = !anchored && running && jibDeployed;
+
+    let jibToDraw = renderJib;
+    let jibStateToDraw = renderJibState;
+    let jibLeewardSign = leewardSign;
+    if (butterfly) {
+      jibLeewardSign = -leewardSign; // windward, opposite the mainsail
+      jibStateToDraw = 'trim'; // the winged jib fills instead of luffing/furling
+      // Ease it well out so the clew clearly wings to the side as a butterfly.
+      jibToDraw = { ...renderJib, sheet: 0.22 };
+    }
+
     // Heeled boats lean their rig to leeward; we model that with a small y-shear.
     ctx.save();
     const shear = this.clamp(heel, -1, 1) * 0.18;
     ctx.transform(1, 0, shear, 1, 0, 0);
-    this.drawJibSail(ctx, renderJib, renderSpeed, leewardSign, renderJibState, windAngleLocal);
+    this.drawJibSail(ctx, jibToDraw, renderSpeed, jibLeewardSign, jibStateToDraw, windAngleLocal, butterfly);
     this.drawMainSail(ctx, renderMain, renderSpeed, leewardSign, renderMainState, windAngleLocal);
     this.drawMast(ctx);
     ctx.restore();
@@ -378,6 +403,118 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
     }
   }
 
+  private drawIslands(ctx: CanvasRenderingContext2D, lake: LakeRect, scale: number): void {
+    for (const island of this.islands) {
+      if (!island.points || island.points.length < 3) {
+        continue;
+      }
+      const pts = island.points.map((p) => ({
+        x: this.mapWorldX(p.x, lake),
+        y: this.mapWorldY(p.y, lake),
+      }));
+
+      // Centroid for a soft sand-to-grass radial fill.
+      let cx = 0;
+      let cy = 0;
+      for (const p of pts) {
+        cx += p.x;
+        cy += p.y;
+      }
+      cx /= pts.length;
+      cy /= pts.length;
+
+      const path = this.islandPath(pts);
+
+      // Shallow-water halo around the island so it reads as a hazard.
+      ctx.save();
+      ctx.beginPath();
+      for (let i = 0; i < pts.length; i++) {
+        const p = pts[i];
+        if (i === 0) {
+          ctx.moveTo(p.x, p.y);
+        } else {
+          ctx.lineTo(p.x, p.y);
+        }
+      }
+      ctx.closePath();
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = 'rgba(173, 216, 196, 0.45)';
+      ctx.lineWidth = 7 * scale;
+      ctx.stroke();
+      ctx.restore();
+
+      let maxR = 0;
+      for (const p of pts) {
+        maxR = Math.max(maxR, Math.hypot(p.x - cx, p.y - cy));
+      }
+      const grad = ctx.createRadialGradient(cx, cy, maxR * 0.1, cx, cy, maxR);
+      grad.addColorStop(0, '#caa85f'); // sand core
+      grad.addColorStop(0.45, '#7fa05a'); // grass
+      grad.addColorStop(1, '#5d7e46'); // darker rim
+      ctx.fillStyle = grad;
+      ctx.fill(path);
+
+      ctx.strokeStyle = 'rgba(60, 84, 48, 0.85)';
+      ctx.lineWidth = 1.4 * scale;
+      ctx.stroke(path);
+    }
+  }
+
+  // Smooth, closed island outline through the given screen-space vertices.
+  private islandPath(pts: Point[]): Path2D {
+    const path = new Path2D();
+    const n = pts.length;
+    const mid = (a: Point, b: Point): Point => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+    let start = mid(pts[n - 1], pts[0]);
+    path.moveTo(start.x, start.y);
+    for (let i = 0; i < n; i++) {
+      const curr = pts[i];
+      const next = pts[(i + 1) % n];
+      const end = mid(curr, next);
+      path.quadraticCurveTo(curr.x, curr.y, end.x, end.y);
+    }
+    path.closePath();
+    return path;
+  }
+
+  private drawBuoys(ctx: CanvasRenderingContext2D, lake: LakeRect, scale: number): void {
+    for (const buoy of this.buoys) {
+      const x = this.mapWorldX(buoy.x, lake);
+      const y = this.mapWorldY(buoy.y, lake);
+      const r = Math.max(4, 7 * scale);
+      const pulse = 0.55 + 0.25 * (0.5 + 0.5 * Math.sin(this.phase * 2));
+
+      // Glow halo to flag the health pickup.
+      ctx.beginPath();
+      ctx.arc(x, y, r * 2.4, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(64, 224, 132, ${0.16 * pulse})`;
+      ctx.fill();
+
+      // Buoy body.
+      const body = ctx.createRadialGradient(x - r * 0.3, y - r * 0.3, r * 0.2, x, y, r);
+      body.addColorStop(0, '#7bf7a8');
+      body.addColorStop(1, '#1f9d52');
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fillStyle = body;
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(8, 40, 22, 0.85)';
+      ctx.lineWidth = Math.max(1, 1.2 * scale);
+      ctx.stroke();
+
+      // White health cross.
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = Math.max(1.4, 1.8 * scale);
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(x, y - r * 0.5);
+      ctx.lineTo(x, y + r * 0.5);
+      ctx.moveTo(x - r * 0.5, y);
+      ctx.lineTo(x + r * 0.5, y);
+      ctx.stroke();
+    }
+  }
+
   // Deterministic, stable look per boat: hull is always a light wooden tone
   // (with subtle per-boat variation), the vivid identity colour lives on the flag.
   private boatColor(boatId: string): BoatColor {
@@ -438,11 +575,11 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
   }
 
   private drawShore(ctx: CanvasRenderingContext2D, width: number, height: number, lake: LakeRect): void {
-    const landGradient = ctx.createLinearGradient(0, 0, 0, height);
-    landGradient.addColorStop(0, '#5f8d62');
-    landGradient.addColorStop(0.55, '#4a754f');
-    landGradient.addColorStop(1, '#3d6344');
-    ctx.fillStyle = landGradient;
+    // No land border anymore: the area around the lake is just deep, dark water.
+    const backdrop = ctx.createLinearGradient(0, 0, 0, height);
+    backdrop.addColorStop(0, '#0b2230');
+    backdrop.addColorStop(1, '#081a26');
+    ctx.fillStyle = backdrop;
     ctx.fillRect(0, 0, width, height);
 
     const lakeGradient = ctx.createLinearGradient(lake.x, lake.y, lake.x, lake.y + lake.height);
@@ -510,14 +647,10 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
   }
 
   private drawLakeBorder(ctx: CanvasRenderingContext2D, lake: LakeRect): void {
-    ctx.strokeStyle = 'rgba(223, 245, 215, 0.75)';
-    ctx.lineWidth = 4;
+    // Subtle dark rim just to seat the water in its frame (no green shore).
+    ctx.strokeStyle = 'rgba(6, 20, 30, 0.55)';
+    ctx.lineWidth = 2;
     this.roundedRect(ctx, lake.x, lake.y, lake.width, lake.height, lake.radius);
-    ctx.stroke();
-
-    ctx.strokeStyle = 'rgba(32, 78, 47, 0.55)';
-    ctx.lineWidth = 1.4;
-    this.roundedRect(ctx, lake.x + 4, lake.y + 4, lake.width - 8, lake.height - 8, Math.max(8, lake.radius - 6));
     ctx.stroke();
   }
 
@@ -669,7 +802,8 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
     speed: number,
     leewardSign: number,
     state: SailVisualState,
-    windAngleLocal: number
+    windAngleLocal: number,
+    goosewing: boolean = false
   ): void {
     const deploy = this.clamp(sail.deploy, 0, 1);
     if (deploy < 0.02 || state === 'down') {
@@ -726,6 +860,16 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
         ? 'rgba(255, 232, 196, 0.97)'
         : '#ffffff';
     const stroke = fill;
+
+    if (goosewing) {
+      // Whisker pole bracing the goose-winged jib out to windward (butterfly).
+      ctx.strokeStyle = 'rgba(58, 42, 18, 0.95)';
+      ctx.lineWidth = 1.3;
+      ctx.beginPath();
+      ctx.moveTo(5, 0);
+      ctx.lineTo(clew.x, clew.y);
+      ctx.stroke();
+    }
 
     this.drawCamberedSail(ctx, tack, clew, belly + Math.abs(flutter), bellySign, fill, stroke, 0.6);
   }
@@ -914,14 +1058,14 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
   }
 
   private getLakeRect(width: number, height: number): LakeRect {
-    const marginX = width * 0.05;
-    const marginY = height * 0.07;
+    const marginX = width * 0.012;
+    const marginY = height * 0.02;
     return {
       x: marginX,
       y: marginY,
       width: width - marginX * 2,
       height: height - marginY * 2,
-      radius: Math.min(width, height) * 0.06,
+      radius: Math.min(width, height) * 0.03,
     };
   }
 

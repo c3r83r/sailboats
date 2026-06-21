@@ -1,12 +1,13 @@
 import { AsyncPipe, CommonModule } from '@angular/common';
 import { Component, DestroyRef, HostListener, OnDestroy, OnInit, inject } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { FormsModule } from '@angular/forms';
 import { Store } from '@ngrx/store';
 import { combineLatest } from 'rxjs';
 import { ControlPanelComponent } from './features/simulation/components/control-panel/control-panel.component';
 import { WaterCanvasComponent } from './features/simulation/components/water-canvas/water-canvas.component';
 import { SimulationActions } from './store/simulation/simulation.actions';
-import { selectBoats, selectConnected, selectControls, selectPlayerBoatId, selectProjectiles, selectWind } from './store/simulation/simulation.selectors';
+import { selectBoats, selectBuoys, selectConnected, selectControls, selectIslands, selectLake, selectPlayerBoatId, selectProjectiles, selectWind } from './store/simulation/simulation.selectors';
 import { FireSide, HelmControlState } from './store/simulation/simulation.models';
 
 export type SailVisualState = 'down' | 'luff' | 'trim' | 'stall' | 'back';
@@ -15,13 +16,37 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [CommonModule, AsyncPipe, ControlPanelComponent, WaterCanvasComponent],
+  imports: [CommonModule, AsyncPipe, FormsModule, ControlPanelComponent, WaterCanvasComponent],
   template: `
     <main class="layout">
+      <div class="welcome" *ngIf="!started">
+        <form class="welcome-card" (ngSubmit)="start()">
+          <h2>Ahoj, kapitanie!</h2>
+          <p>Podaj swoj nick &mdash; pojawi sie przy Twojej lodce zamiast identyfikatora.</p>
+          <input
+            class="welcome-input"
+            type="text"
+            name="nickname"
+            [(ngModel)]="nickname"
+            maxlength="20"
+            placeholder="Twoj nick"
+            autocomplete="off"
+            autofocus />
+          <button type="submit" class="welcome-btn" [disabled]="!nickname.trim()">Wyplyn</button>
+        </form>
+      </div>
+
       <header>
         <div class="brand">
           <h1>Sailboats</h1>
           <p>Multiplayer real-time sailing simulator</p>
+        </div>
+        <div class="lake" *ngIf="lake$ | async as lake">
+          <span class="lake-name">{{ lake.name ?? 'Akwen' }}</span>
+          <span class="lake-count">{{ lake.boats }}/{{ lake.capacity }} łódek</span>
+          <button type="button" class="lake-btn" (click)="changeLake()" [disabled]="(connected$ | async) !== true">
+            Zmień akwen
+          </button>
         </div>
         <span class="status" [class.online]="(connected$ | async) === true">
           {{ (connected$ | async) ? 'LIVE' : 'OFFLINE' }}
@@ -40,6 +65,8 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
         <app-water-canvas
           [boats]="(boats$ | async) ?? []"
           [projectiles]="(projectiles$ | async) ?? []"
+          [buoys]="(buoys$ | async) ?? []"
+          [islands]="(islands$ | async) ?? []"
           [controls]="controls"
           [playerBoatId]="playerBoatId"
           [mainState]="mainState"
@@ -73,11 +100,11 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
     .layout {
       min-height: 100vh;
       width: 100%;
-      max-width: 1500px;
+      max-width: 1840px;
       margin: 0 auto;
-      padding: 22px;
+      padding: 14px 16px;
       display: grid;
-      gap: 16px;
+      gap: 12px;
     }
 
     header {
@@ -116,9 +143,129 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
       font-size: 0.78rem;
       box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
     }
-
     .status.online {
       background: rgba(31, 143, 87, 0.9);
+    }
+
+    .lake {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 999px;
+      padding: 5px 6px 5px 16px;
+    }
+
+    .lake + .status {
+      margin-left: 0;
+    }
+
+    .lake-name {
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      color: #d8f4ff;
+    }
+
+    .lake-count {
+      font-size: 0.78rem;
+      opacity: 0.75;
+    }
+
+    .lake-btn {
+      border: 1px solid rgba(143, 227, 255, 0.4);
+      background: rgba(143, 227, 255, 0.16);
+      color: #d8f4ff;
+      border-radius: 999px;
+      padding: 6px 14px;
+      font-weight: 700;
+      font-size: 0.8rem;
+      cursor: pointer;
+      transition: background 0.15s ease;
+    }
+
+    .lake-btn:hover:not(:disabled) {
+      background: rgba(143, 227, 255, 0.3);
+    }
+
+    .lake-btn:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    .welcome {
+      position: fixed;
+      inset: 0;
+      z-index: 50;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(6, 16, 28, 0.82);
+      backdrop-filter: blur(6px);
+    }
+
+    .welcome-card {
+      display: grid;
+      gap: 12px;
+      width: min(92vw, 380px);
+      padding: 28px 26px;
+      border-radius: 18px;
+      background: rgba(16, 30, 48, 0.96);
+      border: 1px solid rgba(143, 227, 255, 0.25);
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+      text-align: center;
+    }
+
+    .welcome-card h2 {
+      margin: 0;
+      font-size: 1.5rem;
+      letter-spacing: 0.04em;
+      color: #8fe3ff;
+    }
+
+    .welcome-card p {
+      margin: 0;
+      opacity: 0.8;
+      font-size: 0.9rem;
+    }
+
+    .welcome-input {
+      margin-top: 4px;
+      padding: 12px 14px;
+      border-radius: 10px;
+      border: 1px solid rgba(143, 227, 255, 0.35);
+      background: rgba(8, 18, 30, 0.9);
+      color: #eaf6ff;
+      font-size: 1rem;
+      text-align: center;
+      outline: none;
+    }
+
+    .welcome-input:focus {
+      border-color: rgba(143, 227, 255, 0.7);
+    }
+
+    .welcome-btn {
+      padding: 11px 16px;
+      border-radius: 10px;
+      border: 1px solid rgba(143, 227, 255, 0.45);
+      background: linear-gradient(90deg, rgba(143, 227, 255, 0.28), rgba(255, 209, 102, 0.28));
+      color: #eaf6ff;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      font-size: 0.95rem;
+      cursor: pointer;
+      transition: filter 0.15s ease;
+    }
+
+    .welcome-btn:hover:not(:disabled) {
+      filter: brightness(1.15);
+    }
+
+    .welcome-btn:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
     }
 
     .content {
@@ -182,6 +329,10 @@ export class AppComponent implements OnInit, OnDestroy {
   };
   playerBoatId: string | null = null;
 
+  // Welcome screen: the player picks a nickname before the world connects.
+  started = false;
+  nickname = '';
+
   // Live readouts for the control deck.
   mainThrust = 0;
   jibThrust = 0;
@@ -205,9 +356,12 @@ export class AppComponent implements OnInit, OnDestroy {
   connected$ = this.store.select(selectConnected);
   boats$ = this.store.select(selectBoats);
   projectiles$ = this.store.select(selectProjectiles);
+  buoys$ = this.store.select(selectBuoys);
+  islands$ = this.store.select(selectIslands);
   wind$ = this.store.select(selectWind);
   controls$ = this.store.select(selectControls);
   playerBoatId$ = this.store.select(selectPlayerBoatId);
+  lake$ = this.store.select(selectLake);
 
   // Wind blows straight down the screen (matches the backend constant).
   private readonly windDir = 90;
@@ -242,8 +396,6 @@ export class AppComponent implements OnInit, OnDestroy {
   private readonly MAX_RUDDER_DEG = 60;
 
   ngOnInit(): void {
-    this.store.dispatch(SimulationActions.connect());
-
     this.controls$.pipe(takeUntilDestroyed(this.destroyRef)).subscribe((controls) => {
       this.controls = controls;
     });
@@ -278,6 +430,11 @@ export class AppComponent implements OnInit, OnDestroy {
 
   @HostListener('window:keydown', ['$event'])
   onKeyDown(event: KeyboardEvent): void {
+    // Freeze gameplay keys while the welcome screen is up or while typing a nick.
+    if (!this.started || this.isTextInput(event.target)) {
+      return;
+    }
+
     const key = event.key.toLowerCase();
     if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(key)) {
       event.preventDefault();
@@ -320,6 +477,10 @@ export class AppComponent implements OnInit, OnDestroy {
 
   @HostListener('window:keyup', ['$event'])
   onKeyUp(event: KeyboardEvent): void {
+    if (!this.started || this.isTextInput(event.target)) {
+      return;
+    }
+
     const key = event.key.toLowerCase();
     const side = this.arrowToSide(key);
     if (side && this.chargingSide === side) {
@@ -327,6 +488,16 @@ export class AppComponent implements OnInit, OnDestroy {
       return;
     }
     this.pressed.delete(key);
+  }
+
+  // True when focus is in a text field, so we don't steal its keystrokes.
+  private isTextInput(target: EventTarget | null): boolean {
+    const el = target as HTMLElement | null;
+    if (!el) {
+      return false;
+    }
+    const tag = el.tagName;
+    return tag === 'INPUT' || tag === 'TEXTAREA' || el.isContentEditable;
   }
 
   @HostListener('window:blur')
@@ -356,6 +527,20 @@ export class AppComponent implements OnInit, OnDestroy {
     this.chargeLevel = 0;
     this.fireReadyAt = performance.now() + this.FIRE_COOLDOWN_MS;
     this.store.dispatch(SimulationActions.fire({ side, power }));
+  }
+
+  changeLake(): void {
+    this.store.dispatch(SimulationActions.changeLake());
+  }
+
+  start(): void {
+    const nick = this.nickname.trim();
+    if (!nick) {
+      return;
+    }
+    this.nickname = nick;
+    this.started = true;
+    this.store.dispatch(SimulationActions.connect({ nick }));
   }
 
   private tickControls(dt: number): void {
