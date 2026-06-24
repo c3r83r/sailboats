@@ -3,3 +3,6 @@
 -- the simulation-service keeps its lake/room registry in its own database.
 SELECT 'CREATE DATABASE sailboats_simulation'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'sailboats_simulation')\gexec
+
+SELECT 'CREATE DATABASE sailboats_auth'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'sailboats_auth')\gexec

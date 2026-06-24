@@ -1,5 +1,6 @@
 package com.sailboats.simulation.config;
 
+import com.sailboats.simulation.security.AuthHandshakeInterceptor;
 import com.sailboats.simulation.websocket.SimulationWebSocketHandler;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
@@ -12,17 +13,21 @@ import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistry
 public class WebSocketConfig implements WebSocketConfigurer {
 
     private final SimulationWebSocketHandler simulationWebSocketHandler;
+    private final AuthHandshakeInterceptor authHandshakeInterceptor;
     private final String[] allowedOriginPatterns;
 
     public WebSocketConfig(SimulationWebSocketHandler simulationWebSocketHandler,
+                           AuthHandshakeInterceptor authHandshakeInterceptor,
                            @Value("${app.cors.allowed-origins:*}") String allowedOrigins) {
         this.simulationWebSocketHandler = simulationWebSocketHandler;
+        this.authHandshakeInterceptor = authHandshakeInterceptor;
         this.allowedOriginPatterns = parseOrigins(allowedOrigins);
     }
 
     @Override
     public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
         registry.addHandler(simulationWebSocketHandler, "/ws/simulation")
+            .addInterceptors(authHandshakeInterceptor)
             .setAllowedOriginPatterns(allowedOriginPatterns);
     }
 

@@ -1,3 +1,4 @@
+import { provideHttpClient } from '@angular/common/http';
 import { bootstrapApplication } from '@angular/platform-browser';
 import { provideStore } from '@ngrx/store';
 import { provideEffects } from '@ngrx/effects';
@@ -7,6 +8,7 @@ import { SimulationEffects } from './app/store/simulation/simulation.effects';
 
 bootstrapApplication(AppComponent, {
   providers: [
+    provideHttpClient(),
     provideStore({
       [simulationFeatureKey]: simulationReducer,
     }),

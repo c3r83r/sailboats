@@ -9,9 +9,9 @@ export class SimulationEffects {
   connect$ = createEffect(() =>
     this.actions$.pipe(
       ofType(SimulationActions.connect),
-      mergeMap(({ nick }) =>
+      mergeMap(({ token }) =>
         merge(
-          this.simulationWsService.connect(nick).pipe(
+          this.simulationWsService.connect(token).pipe(
             map((snapshot) => SimulationActions.snapshotReceived({ snapshot }))
           ),
           this.simulationWsService.status$().pipe(

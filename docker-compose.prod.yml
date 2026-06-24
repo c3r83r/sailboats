@@ -42,6 +42,28 @@ services:
       SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-sailboats}
       SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       APP_CORS_ALLOWED_ORIGINS: ${APP_CORS_ALLOWED_ORIGINS}
+      APP_JWT_SECRET: ${APP_JWT_SECRET:?set APP_JWT_SECRET in .env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [sailboats]
+
+  auth-service:
+    build:
+      context: ./backend
+      args:
+        SERVICE: auth-service
+    image: sailboats/auth-service
+    container_name: sailboats-auth
+    restart: unless-stopped
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/sailboats_auth
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-sailboats}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      APP_CORS_ALLOWED_ORIGINS: ${APP_CORS_ALLOWED_ORIGINS}
+      APP_JWT_SECRET: ${APP_JWT_SECRET:?set APP_JWT_SECRET in .env}
+      APP_COOKIE_SECURE: ${APP_COOKIE_SECURE:-true}
+      APP_COOKIE_SAMESITE: ${APP_COOKIE_SAMESITE:-Lax}
     depends_on:
       postgres:
         condition: service_healthy
@@ -125,6 +147,7 @@ services:
       - caddy-config:/config
     depends_on:
       - simulation-service
+      - auth-service
       - fleet-service
     networks: [sailboats]
 

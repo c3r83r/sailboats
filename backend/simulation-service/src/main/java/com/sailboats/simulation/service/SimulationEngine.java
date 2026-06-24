@@ -158,6 +158,16 @@ public class SimulationEngine {
         return lakeId == null ? null : worlds.get(lakeId);
     }
 
+    /** True if this boat is already on a lake (used to resume a reconnecting player). */
+    public boolean isAssigned(String boatId) {
+        return boatToLake.containsKey(boatId);
+    }
+
+    /** The lake id a boat currently belongs to, or null. */
+    public String lakeOf(String boatId) {
+        return boatToLake.get(boatId);
+    }
+
     // Trim to a safe, bounded display name; fall back to a default when blank.
     private String sanitizeName(String raw) {
         if (raw == null) {

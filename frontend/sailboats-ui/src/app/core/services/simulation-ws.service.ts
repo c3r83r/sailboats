@@ -9,10 +9,10 @@ export class SimulationWsService {
   private snapshotSubject = new Subject<SimulationSnapshot>();
   private statusSubject = new Subject<'connected' | 'disconnected'>();
 
-  connect(nick?: string): Observable<SimulationSnapshot> {
+  connect(token: string): Observable<SimulationSnapshot> {
     if (!this.socket || this.socket.readyState === WebSocket.CLOSED) {
       const base = environment.simulationWsUrl || this.resolveWsUrl();
-      const url = nick ? `${base}?nick=${encodeURIComponent(nick)}` : base;
+      const url = `${base}?token=${encodeURIComponent(token)}`;
       this.socket = new WebSocket(url);
 
       this.socket.onopen = () => this.statusSubject.next('connected');

@@ -6,6 +6,7 @@ import { Store } from '@ngrx/store';
 import { combineLatest } from 'rxjs';
 import { ControlPanelComponent } from './features/simulation/components/control-panel/control-panel.component';
 import { WaterCanvasComponent } from './features/simulation/components/water-canvas/water-canvas.component';
+import { AuthService } from './core/services/auth.service';
 import { SimulationActions } from './store/simulation/simulation.actions';
 import { selectBoats, selectBuoys, selectConnected, selectControls, selectIslands, selectLake, selectPlayerBoatId, selectProjectiles, selectWind } from './store/simulation/simulation.selectors';
 import { FireSide, HelmControlState } from './store/simulation/simulation.models';
@@ -20,19 +21,40 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
   template: `
     <main class="layout">
       <div class="welcome" *ngIf="!started">
-        <form class="welcome-card" (ngSubmit)="start()">
+        <form class="welcome-card" (ngSubmit)="submitAuth()">
           <h2>Ahoj, kapitanie!</h2>
-          <p>Podaj swoj nick &mdash; pojawi sie przy Twojej lodce zamiast identyfikatora.</p>
+          <p>{{ authMode === 'login' ? 'Zaloguj się, aby wypłynąć na akwen.' : 'Załóż konto, aby wypłynąć na akwen.' }}</p>
           <input
             class="welcome-input"
-            type="text"
-            name="nickname"
-            [(ngModel)]="nickname"
-            maxlength="20"
-            placeholder="Twoj nick"
-            autocomplete="off"
+            type="email"
+            name="email"
+            [(ngModel)]="email"
+            placeholder="Email"
+            autocomplete="email"
             autofocus />
-          <button type="submit" class="welcome-btn" [disabled]="!nickname.trim()">Wyplyn</button>
+          <input
+            class="welcome-input"
+            type="password"
+            name="password"
+            [(ngModel)]="password"
+            placeholder="Hasło (min. 8 znaków)"
+            [attr.autocomplete]="authMode === 'login' ? 'current-password' : 'new-password'" />
+          <input
+            *ngIf="authMode === 'register'"
+            class="welcome-input"
+            type="text"
+            name="displayName"
+            [(ngModel)]="displayName"
+            maxlength="40"
+            placeholder="Nick (widoczny przy łódce)"
+            autocomplete="off" />
+          <p class="welcome-error" *ngIf="authError">{{ authError }}</p>
+          <button type="submit" class="welcome-btn" [disabled]="authBusy">
+            {{ authBusy ? 'Chwila...' : (authMode === 'login' ? 'Zaloguj i wypłyń' : 'Zarejestruj i wypłyń') }}
+          </button>
+          <button type="button" class="welcome-link" (click)="toggleAuthMode()">
+            {{ authMode === 'login' ? 'Nie masz konta? Zarejestruj się' : 'Masz już konto? Zaloguj się' }}
+          </button>
         </form>
       </div>
 
@@ -51,6 +73,7 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
         <span class="status" [class.online]="(connected$ | async) === true">
           {{ (connected$ | async) ? 'LIVE' : 'OFFLINE' }}
         </span>
+        <button type="button" class="logout-btn" *ngIf="started" (click)="logout()">Wyloguj</button>
       </header>
 
       <div class="kbd-help">
@@ -268,6 +291,39 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
       cursor: not-allowed;
     }
 
+    .welcome-error {
+      margin: 2px 0 0;
+      color: #ff9a9a;
+      font-size: 0.85rem;
+    }
+
+    .welcome-link {
+      background: none;
+      border: none;
+      color: rgba(143, 227, 255, 0.85);
+      font-size: 0.85rem;
+      cursor: pointer;
+      text-decoration: underline;
+    }
+
+    .welcome-link:hover {
+      color: #eaf6ff;
+    }
+
+    .logout-btn {
+      padding: 6px 12px;
+      border-radius: 8px;
+      border: 1px solid rgba(143, 227, 255, 0.35);
+      background: rgba(8, 18, 30, 0.6);
+      color: #eaf6ff;
+      font-size: 0.8rem;
+      cursor: pointer;
+    }
+
+    .logout-btn:hover {
+      filter: brightness(1.15);
+    }
+
     .content {
       display: grid;
       gap: 18px;
@@ -319,6 +375,7 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
 export class AppComponent implements OnInit, OnDestroy {
   private readonly store = inject(Store);
   private readonly destroyRef = inject(DestroyRef);
+  private readonly auth = inject(AuthService);
 
   controls: HelmControlState = {
     rudder: 0,
@@ -329,9 +386,14 @@ export class AppComponent implements OnInit, OnDestroy {
   };
   playerBoatId: string | null = null;
 
-  // Welcome screen: the player picks a nickname before the world connects.
+  // Welcome screen: the player logs in or registers before the world connects.
   started = false;
-  nickname = '';
+  authMode: 'login' | 'register' = 'login';
+  email = '';
+  password = '';
+  displayName = '';
+  authError = '';
+  authBusy = false;
 
   // Live readouts for the control deck.
   mainThrust = 0;
@@ -393,6 +455,7 @@ export class AppComponent implements OnInit, OnDestroy {
   private readonly pressed = new Set<string>();
   private loopHandle: ReturnType<typeof setInterval> | null = null;
   private lastSent = { rudder: 0, sailTrim: 0, anchored: true };
+  private readonly CONTROLS_KEY = 'sailboats.controls';
 
   // Control rates (per second).
   private readonly RUDDER_RATE = 2.2;
@@ -402,6 +465,15 @@ export class AppComponent implements OnInit, OnDestroy {
   private readonly MAX_RUDDER_DEG = 60;
 
   ngOnInit(): void {
+    // Try to resume an existing session from the HttpOnly refresh cookie so a
+    // page reload / new tab drops the player straight back onto their boat.
+    this.auth.refresh().subscribe({
+      next: () => this.enterGame(),
+      error: () => {
+        /* No valid session: stay on the login screen. */
+      },
+    });
+
     this.controls$.pipe(takeUntilDestroyed(this.destroyRef)).subscribe((controls) => {
       this.controls = controls;
     });
@@ -564,13 +636,74 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   start(): void {
-    const nick = this.nickname.trim();
-    if (!nick) {
+    // Retained for compatibility; the welcome form now calls submitAuth().
+    this.submitAuth();
+  }
+
+  submitAuth(): void {
+    const email = this.email.trim();
+    const password = this.password;
+    if (!email || !password) {
+      this.authError = 'Podaj email i hasło.';
       return;
     }
-    this.nickname = nick;
+    if (this.authMode === 'register' && password.length < 8) {
+      this.authError = 'Hasło musi mieć min. 8 znaków.';
+      return;
+    }
+    this.authBusy = true;
+    this.authError = '';
+    const request =
+      this.authMode === 'login'
+        ? this.auth.login(email, password)
+        : this.auth.register(email, password, this.displayName.trim() || email.split('@')[0]);
+    request.subscribe({
+      next: () => {
+        this.authBusy = false;
+        this.enterGame();
+      },
+      error: (err) => {
+        this.authBusy = false;
+        this.authError = this.authErrorMessage(err?.status);
+      },
+    });
+  }
+
+  toggleAuthMode(): void {
+    this.authMode = this.authMode === 'login' ? 'register' : 'login';
+    this.authError = '';
+  }
+
+  logout(): void {
+    this.auth.logout().subscribe({
+      next: () => window.location.reload(),
+      error: () => window.location.reload(),
+    });
+  }
+
+  // Connect to the simulation once we hold a valid access token.
+  private enterGame(): void {
+    const token = this.auth.token;
+    if (!token) {
+      return;
+    }
     this.started = true;
-    this.store.dispatch(SimulationActions.connect({ nick }));
+    this.store.dispatch(SimulationActions.connect({ token }));
+    // Restore the player's last helm settings so a page refresh keeps the trim.
+    this.restoreControls();
+  }
+
+  private authErrorMessage(status: number | undefined): string {
+    if (status === 401) {
+      return 'Nieprawidłowy email lub hasło.';
+    }
+    if (status === 409) {
+      return 'Konto z tym adresem już istnieje.';
+    }
+    if (status === 400) {
+      return 'Sprawdź dane: poprawny email i hasło min. 8 znaków.';
+    }
+    return 'Coś poszło nie tak. Spróbuj ponownie.';
   }
 
   private tickControls(dt: number): void {
@@ -688,6 +821,56 @@ export class AppComponent implements OnInit, OnDestroy {
         anchored: controls.anchored,
       };
       this.store.dispatch(SimulationActions.controlsChanged({ controls }));
+    }
+
+    this.persistControls();
+  }
+
+  // Persist the full helm state (per user) so a page reload restores it instead
+  // of snapping the control deck back to zero while the boat sails on.
+  private persistControls(): void {
+    const user = this.auth.currentUser;
+    if (!user) {
+      return;
+    }
+    try {
+      localStorage.setItem(
+        `${this.CONTROLS_KEY}.${user.id}`,
+        JSON.stringify({ controls: this.controls, autoTrim: this.autoTrim, jibWing: this.jibWing })
+      );
+    } catch {
+      /* localStorage unavailable: skip persistence. */
+    }
+  }
+
+  private restoreControls(): void {
+    const user = this.auth.currentUser;
+    if (!user) {
+      return;
+    }
+    try {
+      const raw = localStorage.getItem(`${this.CONTROLS_KEY}.${user.id}`);
+      if (!raw) {
+        return;
+      }
+      const saved = JSON.parse(raw) as { controls?: HelmControlState; autoTrim?: boolean; jibWing?: number };
+      if (saved.controls) {
+        this.controls = saved.controls;
+        this.lastSent = {
+          rudder: saved.controls.rudder,
+          sailTrim: saved.controls.sailTrim,
+          anchored: saved.controls.anchored,
+        };
+        this.store.dispatch(SimulationActions.controlsChanged({ controls: saved.controls }));
+      }
+      if (typeof saved.autoTrim === 'boolean') {
+        this.autoTrim = saved.autoTrim;
+      }
+      if (typeof saved.jibWing === 'number') {
+        this.jibWing = saved.jibWing;
+      }
+    } catch {
+      /* Corrupt/unavailable storage: fall back to defaults. */
     }
   }
 

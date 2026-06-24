@@ -13,6 +13,7 @@
     <module>simulation-service</module>
     <module>fleet-service</module>
     <module>telemetry-service</module>
+    <module>auth-service</module>
   </modules>
 
   <properties>

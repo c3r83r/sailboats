@@ -17,6 +17,11 @@
 		reverse_proxy simulation-service:8083
 	}
 
+	# Authentication REST API.
+	handle /api/auth/* {
+		reverse_proxy auth-service:8084
+	}
+
 	# Fleet REST API.
 	handle /api/fleet/* {
 		reverse_proxy fleet-service:8081

@@ -4,7 +4,7 @@ import { FireSide, HelmControlState, SimulationSnapshot } from './simulation.mod
 export const SimulationActions = createActionGroup({
   source: 'Simulation',
   events: {
-    Connect: props<{ nick: string }>(),
+    Connect: props<{ token: string }>(),
     Connected: emptyProps(),
     Disconnected: emptyProps(),
     'Snapshot Received': props<{ snapshot: SimulationSnapshot }>(),

@@ -5,11 +5,13 @@ import com.sailboats.common.dto.SimulationSnapshotDto;
 import com.sailboats.simulation.model.ControlInput;
 import com.sailboats.simulation.service.SimulationEngine;
 import java.io.IOException;
-import java.net.URLDecoder;
-import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
@@ -19,9 +21,18 @@ import org.springframework.web.socket.handler.TextWebSocketHandler;
 @Component
 public class SimulationWebSocketHandler extends TextWebSocketHandler {
 
+    // Keep a disconnected player's boat alive briefly so a tab refresh/switch resumes it.
+    private static final long RECONNECT_GRACE_SECONDS = 45;
+
     private final ObjectMapper objectMapper;
     private final SimulationEngine simulationEngine;
     private final Map<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
+    private final Map<String, ScheduledFuture<?>> pendingRemovals = new ConcurrentHashMap<>();
+    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r, "ws-reconnect-grace");
+        t.setDaemon(true);
+        return t;
+    });
 
     public SimulationWebSocketHandler(ObjectMapper objectMapper, SimulationEngine simulationEngine) {
         this.objectMapper = objectMapper;
@@ -31,30 +42,19 @@ public class SimulationWebSocketHandler extends TextWebSocketHandler {
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
-        String boatId = "boat-" + session.getId();
+        // userId/userName are set by AuthHandshakeInterceptor after validating the token.
+        String userId = (String) session.getAttributes().get("userId");
+        String name = (String) session.getAttributes().get("userName");
+        String boatId = "user-" + userId;
         session.getAttributes().put("boatId", boatId);
         sessions.put(session.getId(), session);
-        // Drop the new boat onto a lake with a free slot (or a brand-new one).
-        String lakeId = simulationEngine.assignBoat(boatId, extractNick(session));
-        session.getAttributes().put("lakeId", lakeId);
-    }
 
-    // Pull the player's chosen nickname from the handshake query (?nick=...).
-    private String extractNick(WebSocketSession session) {
-        if (session.getUri() == null) {
-            return null;
-        }
-        String query = session.getUri().getQuery();
-        if (query == null) {
-            return null;
-        }
-        for (String pair : query.split("&")) {
-            int eq = pair.indexOf('=');
-            if (eq > 0 && "nick".equals(pair.substring(0, eq))) {
-                return URLDecoder.decode(pair.substring(eq + 1), StandardCharsets.UTF_8);
-            }
-        }
-        return null;
+        // A reconnect within the grace window resumes the same boat instead of spawning a new one.
+        cancelPendingRemoval(boatId);
+        String lakeId = simulationEngine.isAssigned(boatId)
+            ? simulationEngine.lakeOf(boatId)
+            : simulationEngine.assignBoat(boatId, name);
+        session.getAttributes().put("lakeId", lakeId);
     }
 
     @Override
@@ -80,9 +80,39 @@ public class SimulationWebSocketHandler extends TextWebSocketHandler {
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
         sessions.remove(session.getId());
         String boatId = (String) session.getAttributes().get("boatId");
-        if (boatId != null) {
-            simulationEngine.removeBoat(boatId);
+        if (boatId == null) {
+            return;
         }
+        // If the player still has another open tab, keep the boat as-is.
+        if (hasOpenSession(boatId)) {
+            return;
+        }
+        scheduleRemoval(boatId);
+    }
+
+    private void scheduleRemoval(String boatId) {
+        ScheduledFuture<?> future = scheduler.schedule(() -> {
+            pendingRemovals.remove(boatId);
+            if (!hasOpenSession(boatId)) {
+                simulationEngine.removeBoat(boatId);
+            }
+        }, RECONNECT_GRACE_SECONDS, TimeUnit.SECONDS);
+        ScheduledFuture<?> previous = pendingRemovals.put(boatId, future);
+        if (previous != null) {
+            previous.cancel(false);
+        }
+    }
+
+    private void cancelPendingRemoval(String boatId) {
+        ScheduledFuture<?> future = pendingRemovals.remove(boatId);
+        if (future != null) {
+            future.cancel(false);
+        }
+    }
+
+    private boolean hasOpenSession(String boatId) {
+        return sessions.values().stream()
+            .anyMatch(s -> s.isOpen() && boatId.equals(s.getAttributes().get("boatId")));
     }
 
     private void broadcastSnapshots(Map<String, SimulationSnapshotDto> snapshotsByLake) {

@@ -1,11 +1,11 @@
 server:
-  port: 8083
+  port: 8084
 
 spring:
   application:
-    name: simulation-service
+    name: auth-service
   datasource:
-    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/sailboats_simulation}
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/sailboats_auth}
     username: ${SPRING_DATASOURCE_USERNAME:sailboats}
     password: ${SPRING_DATASOURCE_PASSWORD:sailboats}
   jpa:
@@ -23,7 +23,13 @@ management:
 
 app:
   cors:
-    allowed-origins: ${APP_CORS_ALLOWED_ORIGINS:*}
+    allowed-origins: ${APP_CORS_ALLOWED_ORIGINS:http://localhost:4200}
   jwt:
-    # Must match auth-service's APP_JWT_SECRET so tokens validate here.
+    # Must be >= 32 bytes. Override in production via APP_JWT_SECRET.
     secret: ${APP_JWT_SECRET:dev-only-insecure-secret-change-me-please-0123456789abcdef}
+    access-token-ttl-seconds: ${APP_JWT_ACCESS_TTL:900}
+  refresh:
+    ttl-days: ${APP_REFRESH_TTL_DAYS:30}
+  cookie:
+    secure: ${APP_COOKIE_SECURE:false}
+    same-site: ${APP_COOKIE_SAMESITE:Lax}
