@@ -370,6 +370,10 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
       return;
     }
 
+    const wakeNow = performance.now();
+    this.updateWakeTrails(wakeNow);
+    this.drawWakeTrails(ctx, lake, scale, wakeNow);
+
     for (const boat of this.boats) {
       const x = this.mapWorldX(boat.x, lake);
       const y = this.mapWorldY(boat.y, lake);
@@ -454,8 +458,6 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
     }
     const leewardSign = this.leewardHysteresis;
 
-    this.drawWake(ctx, renderSpeed);
-    // this.drawBowWave(ctx, renderSpeed);
     this.drawHull(ctx, isPlayer, color);
     this.drawCannons(ctx);
     this.drawRudder(ctx, anchored ? 0 : rudder);
@@ -751,19 +753,88 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
     ctx.stroke();
   }
 
-  private drawWake(ctx: CanvasRenderingContext2D, speed: number): void {
-    const len = 14 + speed * 16;
-    const gradient = ctx.createLinearGradient(-16, 0, -16 - len, 0);
-    gradient.addColorStop(0, 'rgba(255, 255, 255, 0.35)');
-    gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
-    ctx.fillStyle = gradient;
-    ctx.beginPath();
-    ctx.moveTo(-14, -4);
-    ctx.lineTo(-16 - len, -1.5);
-    ctx.lineTo(-16 - len, 1.5);
-    ctx.lineTo(-14, 4);
-    ctx.closePath();
-    ctx.fill();
+  private readonly wakeTrails = new Map<string, { x: number; y: number; born: number }[]>();
+  private readonly WAKE_SPACING = 0.18;
+  private readonly WAKE_LIFETIME = 2600; // ms each foam point stays before it fully fades
+  private readonly WAKE_MAX_POINTS = 80;
+
+  // Emit a foam point as each boat moves, then age EVERY trail out over a fixed
+  // lifetime so the wake always fades smoothly with time -- it never snaps off
+  // when the boat stops, and it keeps fading while the boat is slowing down.
+  private updateWakeTrails(now: number): void {
+    const present = new Set<string>();
+    for (const boat of this.boats) {
+      present.add(boat.boatId);
+      let trail = this.wakeTrails.get(boat.boatId);
+      const moving = !boat.sunk && !boat.anchored && (boat.speed ?? 0) >= 0.15;
+      if (moving) {
+        if (!trail) {
+          trail = [];
+          this.wakeTrails.set(boat.boatId, trail);
+        }
+        const head = trail[trail.length - 1];
+        if (head && Math.hypot(boat.x - head.x, boat.y - head.y) > 3) {
+          // Teleport (lake change / respawn): drop the old path and start fresh.
+          trail.length = 0;
+        }
+        const tail = trail[trail.length - 1];
+        if (!tail || Math.hypot(boat.x - tail.x, boat.y - tail.y) >= this.WAKE_SPACING) {
+          trail.push({ x: boat.x, y: boat.y, born: now });
+          if (trail.length > this.WAKE_MAX_POINTS) {
+            trail.shift();
+          }
+        }
+      }
+      // Age points out by time regardless of speed, so a stopped or slowing boat's
+      // wake keeps fading evenly instead of freezing or snapping away.
+      if (trail) {
+        while (trail.length && now - trail[0].born > this.WAKE_LIFETIME) {
+          trail.shift();
+        }
+        if (!trail.length) {
+          this.wakeTrails.delete(boat.boatId);
+        }
+      }
+    }
+    // Drop trails for boats that left the lake.
+    for (const id of Array.from(this.wakeTrails.keys())) {
+      if (!present.has(id)) {
+        this.wakeTrails.delete(id);
+      }
+    }
+  }
+
+  // Fading, widening foam trail astern of each boat (replaces the old cone).
+  private drawWakeTrails(ctx: CanvasRenderingContext2D, lake: LakeRect, scale: number, now: number): void {
+    if (!this.wakeTrails.size) {
+      return;
+    }
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    for (const trail of this.wakeTrails.values()) {
+      const n = trail.length;
+      if (n < 2) {
+        continue;
+      }
+      for (let i = 1; i < n; i++) {
+        const p = trail[i];
+        const age = Math.min(1, (now - p.born) / this.WAKE_LIFETIME); // 0 = fresh, 1 = gone
+        const fade = 1 - age; // linear in time => even fade as the foam dissipates
+        const x0 = this.mapWorldX(trail[i - 1].x, lake);
+        const y0 = this.mapWorldY(trail[i - 1].y, lake);
+        const x1 = this.mapWorldX(p.x, lake);
+        const y1 = this.mapWorldY(p.y, lake);
+        // Fresh foam at the stern is bright + narrow; it spreads and fades with age.
+        ctx.strokeStyle = `rgba(214, 236, 255, ${0.42 * fade})`;
+        ctx.lineWidth = (2 + 13 * age) * scale;
+        ctx.beginPath();
+        ctx.moveTo(x0, y0);
+        ctx.lineTo(x1, y1);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
   }
 
   private drawMast(ctx: CanvasRenderingContext2D): void {

@@ -26,6 +26,14 @@ export class SimulationWsService {
     return this.snapshotSubject.asObservable();
   }
 
+  /** Close the connection (e.g. when the player has been idle/away too long). */
+  disconnect(): void {
+    if (this.socket) {
+      this.socket.close();
+      this.socket = undefined;
+    }
+  }
+
   status$(): Observable<'connected' | 'disconnected'> {
     return this.statusSubject.asObservable();
   }

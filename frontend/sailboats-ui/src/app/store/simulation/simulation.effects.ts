@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import { Actions, createEffect, ofType } from '@ngrx/effects';
-import { map, merge, mergeMap, tap } from 'rxjs';
+import { map, merge, switchMap, tap } from 'rxjs';
 import { SimulationWsService } from '../../core/services/simulation-ws.service';
 import { SimulationActions } from './simulation.actions';
 
@@ -9,7 +9,7 @@ export class SimulationEffects {
   connect$ = createEffect(() =>
     this.actions$.pipe(
       ofType(SimulationActions.connect),
-      mergeMap(({ token }) =>
+      switchMap(({ token }) =>
         merge(
           this.simulationWsService.connect(token).pipe(
             map((snapshot) => SimulationActions.snapshotReceived({ snapshot }))

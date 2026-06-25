@@ -7,6 +7,7 @@ import { combineLatest } from 'rxjs';
 import { ControlPanelComponent } from './features/simulation/components/control-panel/control-panel.component';
 import { WaterCanvasComponent } from './features/simulation/components/water-canvas/water-canvas.component';
 import { AuthService } from './core/services/auth.service';
+import { SimulationWsService } from './core/services/simulation-ws.service';
 import { SimulationActions } from './store/simulation/simulation.actions';
 import { selectBoats, selectBuoys, selectConnected, selectControls, selectIslands, selectLake, selectLakes, selectPlayerBoatId, selectProjectiles, selectWind, selectWorld } from './store/simulation/simulation.selectors';
 import { BoatState, FireSide, HelmControlState, LakeSize, LakeSummary } from './store/simulation/simulation.models';
@@ -877,6 +878,7 @@ export class AppComponent implements OnInit, OnDestroy {
   private readonly store = inject(Store);
   private readonly destroyRef = inject(DestroyRef);
   private readonly auth = inject(AuthService);
+  private readonly ws = inject(SimulationWsService);
 
   controls: HelmControlState = {
     rudder: 0,
@@ -994,7 +996,10 @@ export class AppComponent implements OnInit, OnDestroy {
   private readonly pressed = new Set<string>();
   private loopHandle: ReturnType<typeof setInterval> | null = null;
   private lastSent = { rudder: 0, sailTrim: 0, anchored: true };
-  private readonly CONTROLS_KEY = 'sailboats.controls';
+  // Disconnect a player who leaves the page (tab hidden) for too long.
+  private awayTimer: ReturnType<typeof setTimeout> | null = null;
+  private awayDisconnected = false;
+  private readonly AWAY_TIMEOUT_MS = 45000;
 
   // Control rates (per second).
   private readonly RUDDER_RATE = 2.2;
@@ -1212,6 +1217,7 @@ export class AppComponent implements OnInit, OnDestroy {
   joinLake(lakeId: string): void {
     if (lakeId !== this.currentLakeId) {
       this.store.dispatch(SimulationActions.joinLake({ lakeId }));
+      this.resetControls();
     }
     this.closeLakeBrowser();
   }
@@ -1237,6 +1243,7 @@ export class AppComponent implements OnInit, OnDestroy {
         name: this.createName.trim(),
       })
     );
+    this.resetControls();
     this.closeLakeBrowser();
   }
 
@@ -1319,6 +1326,46 @@ export class AppComponent implements OnInit, OnDestroy {
     }
   }
 
+  // Disconnect players who leave the page (hidden tab) for longer than the grace
+  // window, so they free their boat/slot; rejoin automatically on return.
+  @HostListener('document:visibilitychange')
+  onVisibilityChange(): void {
+    if (document.hidden) {
+      if (this.started && this.awayTimer === null) {
+        this.awayTimer = setTimeout(() => this.handleIdleTimeout(), this.AWAY_TIMEOUT_MS);
+      }
+    } else {
+      if (this.awayTimer !== null) {
+        clearTimeout(this.awayTimer);
+        this.awayTimer = null;
+      }
+      if (this.awayDisconnected) {
+        this.awayDisconnected = false;
+        this.rejoinAfterIdle();
+      }
+    }
+  }
+
+  private handleIdleTimeout(): void {
+    this.awayTimer = null;
+    if (!this.started) {
+      return;
+    }
+    this.awayDisconnected = true;
+    this.ws.disconnect();
+    this.store.dispatch(SimulationActions.disconnected());
+  }
+
+  private rejoinAfterIdle(): void {
+    // The access token may have expired while away: refresh, then reconnect.
+    this.auth.refresh().subscribe({
+      next: () => this.enterGame(),
+      error: () => {
+        this.started = false;
+      },
+    });
+  }
+
   // Connect to the simulation once we hold a valid access token.
   private enterGame(): void {
     const token = this.auth.token;
@@ -1327,8 +1374,8 @@ export class AppComponent implements OnInit, OnDestroy {
     }
     this.started = true;
     this.store.dispatch(SimulationActions.connect({ token }));
-    // Restore the player's last helm settings so a page refresh keeps the trim.
-    this.restoreControls();
+    // Always start fresh: sails down + anchor (resets the boat on login/rejoin).
+    this.resetControls();
   }
 
   private authErrorMessage(status: number | undefined): string {
@@ -1460,56 +1507,23 @@ export class AppComponent implements OnInit, OnDestroy {
       };
       this.store.dispatch(SimulationActions.controlsChanged({ controls }));
     }
-
-    this.persistControls();
   }
 
-  // Persist the full helm state (per user) so a page reload restores it instead
-  // of snapping the control deck back to zero while the boat sails on.
-  private persistControls(): void {
-    const user = this.auth.currentUser;
-    if (!user) {
-      return;
-    }
-    try {
-      localStorage.setItem(
-        `${this.CONTROLS_KEY}.${user.id}`,
-        JSON.stringify({ controls: this.controls, autoTrim: this.autoTrim, jibWing: this.jibWing })
-      );
-    } catch {
-      /* localStorage unavailable: skip persistence. */
-    }
-  }
-
-  private restoreControls(): void {
-    const user = this.auth.currentUser;
-    if (!user) {
-      return;
-    }
-    try {
-      const raw = localStorage.getItem(`${this.CONTROLS_KEY}.${user.id}`);
-      if (!raw) {
-        return;
-      }
-      const saved = JSON.parse(raw) as { controls?: HelmControlState; autoTrim?: boolean; jibWing?: number };
-      if (saved.controls) {
-        this.controls = saved.controls;
-        this.lastSent = {
-          rudder: saved.controls.rudder,
-          sailTrim: saved.controls.sailTrim,
-          anchored: saved.controls.anchored,
-        };
-        this.store.dispatch(SimulationActions.controlsChanged({ controls: saved.controls }));
-      }
-      if (typeof saved.autoTrim === 'boolean') {
-        this.autoTrim = saved.autoTrim;
-      }
-      if (typeof saved.jibWing === 'number') {
-        this.jibWing = saved.jibWing;
-      }
-    } catch {
-      /* Corrupt/unavailable storage: fall back to defaults. */
-    }
+  // Reset the helm to the start-of-game state (sails down, anchored). Called on
+  // login and on every lake change so the boat always starts fresh.
+  private resetControls(): void {
+    const fresh: HelmControlState = {
+      rudder: 0,
+      sailTrim: 0,
+      jib: { deploy: 0, sheet: 0, side: 0 },
+      main: { deploy: 0, sheet: 0, side: 0 },
+      anchored: true,
+    };
+    this.controls = fresh;
+    this.autoTrim = false;
+    this.jibWing = 0;
+    this.lastSent = { rudder: 0, sailTrim: 0, anchored: true };
+    this.store.dispatch(SimulationActions.controlsChanged({ controls: fresh }));
   }
 
   private computeDrive(controls: HelmControlState): {
