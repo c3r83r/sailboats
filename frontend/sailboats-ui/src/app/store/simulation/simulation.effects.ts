@@ -42,11 +42,20 @@ export class SimulationEffects {
     { dispatch: false }
   );
 
-  changeLake$ = createEffect(
+  joinLake$ = createEffect(
     () =>
       this.actions$.pipe(
-        ofType(SimulationActions.changeLake),
-        tap(() => this.simulationWsService.sendChangeLake())
+        ofType(SimulationActions.joinLake),
+        tap(({ lakeId }) => this.simulationWsService.sendJoinLake(lakeId))
+      ),
+    { dispatch: false }
+  );
+
+  createLake$ = createEffect(
+    () =>
+      this.actions$.pipe(
+        ofType(SimulationActions.createLake),
+        tap(({ size, bots, windDirection, name }) => this.simulationWsService.sendCreateLake(size, bots, windDirection, name))
       ),
     { dispatch: false }
   );

@@ -15,6 +15,8 @@ public record SimulationSnapshotDto(
     List<IslandDto> islands,
     String lakeId,
     String lakeName,
+    double worldWidth,
+    double worldHeight,
     int lakeBoats,
     int lakeCapacity,
     int lakeTotal

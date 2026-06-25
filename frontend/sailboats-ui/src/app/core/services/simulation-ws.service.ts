@@ -56,11 +56,19 @@ export class SimulationWsService {
     this.socket.send(JSON.stringify({ type: 'fire', side, power }));
   }
 
-  sendChangeLake(): void {
+  sendJoinLake(lakeId: string): void {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
       return;
     }
 
-    this.socket.send(JSON.stringify({ type: 'changeLake' }));
+    this.socket.send(JSON.stringify({ type: 'joinLake', lakeId }));
+  }
+
+  sendCreateLake(size: string, bots: boolean, windDirection: number | null, name: string): void {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    this.socket.send(JSON.stringify({ type: 'createLake', size, bots, windDirection, name }));
   }
 }

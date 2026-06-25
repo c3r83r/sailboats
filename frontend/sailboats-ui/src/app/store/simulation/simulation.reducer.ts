@@ -28,11 +28,14 @@ const initialState: SimulationState = {
   playerBoatId: null,
   windDirection: 0,
   windStrength: 0,
+  worldWidth: 28,
+  worldHeight: 15.75,
   lakeId: null,
   lakeName: null,
   lakeBoats: 0,
   lakeCapacity: 0,
   lakeTotal: 0,
+  lakes: [],
 };
 
 export const simulationReducer = createReducer(
@@ -48,11 +51,14 @@ export const simulationReducer = createReducer(
     playerBoatId: snapshot.yourBoatId ?? state.playerBoatId,
     windDirection: snapshot.windDirection,
     windStrength: snapshot.windStrength,
+    worldWidth: snapshot.worldWidth ?? state.worldWidth,
+    worldHeight: snapshot.worldHeight ?? state.worldHeight,
     lakeId: snapshot.lakeId ?? state.lakeId,
     lakeName: snapshot.lakeName ?? state.lakeName,
     lakeBoats: snapshot.lakeBoats ?? state.lakeBoats,
     lakeCapacity: snapshot.lakeCapacity ?? state.lakeCapacity,
     lakeTotal: snapshot.lakeTotal ?? state.lakeTotal,
+    lakes: snapshot.lakes ?? state.lakes,
   })),
   on(SimulationActions.controlsChanged, (state, { controls }) => ({
     ...state,

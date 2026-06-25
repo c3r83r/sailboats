@@ -3,6 +3,7 @@ package com.sailboats.simulation.service;
 import com.sailboats.common.dto.SimulationSnapshotDto;
 import com.sailboats.simulation.domain.LakeEntity;
 import com.sailboats.simulation.domain.LakeMemberEntity;
+import com.sailboats.simulation.domain.LakeSize;
 import com.sailboats.simulation.model.ControlInput;
 import com.sailboats.simulation.repository.LakeMemberRepository;
 import com.sailboats.simulation.repository.LakeRepository;
@@ -37,8 +38,6 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class SimulationEngine {
 
-    private static final int DEFAULT_CAPACITY = 5;
-
     private final LakeRepository lakeRepository;
     private final LakeMemberRepository memberRepository;
 
@@ -59,14 +58,11 @@ public class SimulationEngine {
     @PostConstruct
     @Transactional
     void start() {
-        // In-memory worlds are empty after a restart, so clear stale assignments
-        // and park every persisted lake as inactive until someone joins it again.
+        // In-memory worlds are empty after a restart, so wipe stale assignments
+        // and the ephemeral lakes; fresh lakes are created on demand when players
+        // join or create them.
         memberRepository.deleteAllInBatch();
-        List<LakeEntity> lakes = lakeRepository.findAll();
-        for (LakeEntity lake : lakes) {
-            lake.setActive(false);
-        }
-        lakeRepository.saveAll(lakes);
+        lakeRepository.deleteAllInBatch();
 
         scheduler.scheduleAtFixedRate(this::tick, 0, 50, TimeUnit.MILLISECONDS);
     }
@@ -102,34 +98,79 @@ public class SimulationEngine {
         }
     }
 
-    /** Place a freshly connected boat on a lake and return that lake's id. */
+    /** Place a freshly connected boat on a SMALL lake and return that lake's id. */
     @Transactional
     public String assignBoat(String boatId, String name) {
         synchronized (assignmentLock) {
             boatNames.put(boatId, sanitizeName(name));
-            LakeEntity lake = findLakeWithSpace(null).orElseGet(this::createLake);
+            LakeEntity lake = findLakeWithSpace(null, LakeSize.SMALL)
+                .orElseGet(() -> createLake(LakeSize.SMALL, true, resolveWind(null), null));
             joinLake(boatId, lake);
             return lake.getId().toString();
         }
     }
 
-    /** Move a boat to a different lake (or a brand-new one) and return its id. */
+    /** Move a boat onto a specific existing lake chosen from the browser. */
     @Transactional
-    public String changeLake(String boatId) {
+    public String joinExistingLake(String boatId, String lakeId) {
         synchronized (assignmentLock) {
             String currentId = boatToLake.get(boatId);
-            UUID currentUuid = currentId != null ? UUID.fromString(currentId) : null;
-
-            LakeEntity target = findLakeWithSpace(currentUuid).orElseGet(this::createLake);
-            if (currentId != null && target.getId().toString().equals(currentId)) {
-                // Nothing better available and we somehow matched ourselves: stay put.
+            if (lakeId == null || lakeId.equals(currentId)) {
                 return currentId;
             }
-
+            UUID uuid;
+            try {
+                uuid = UUID.fromString(lakeId);
+            } catch (IllegalArgumentException ex) {
+                return currentId;
+            }
+            LakeEntity lake = lakeRepository.findById(uuid).filter(LakeEntity::isActive).orElse(null);
+            if (lake == null || memberRepository.countByLakeId(uuid) >= lake.getCapacity()) {
+                return currentId; // gone or full: stay put
+            }
             leaveCurrentLake(boatId);
-            joinLake(boatId, target);
-            return target.getId().toString();
+            joinLake(boatId, lake);
+            return lake.getId().toString();
         }
+    }
+
+    /** Create a brand-new lake of the given size and move the boat onto it. */
+    @Transactional
+    public String createAndJoinLake(String boatId, LakeSize size, boolean bots, Double windDirection, String name) {
+        synchronized (assignmentLock) {
+            LakeEntity lake = createLake(size, bots, resolveWind(windDirection), name);
+            leaveCurrentLake(boatId);
+            joinLake(boatId, lake);
+            return lake.getId().toString();
+        }
+    }
+
+    // Use the requested wind (normalised to 0..360) or a random direction.
+    private double resolveWind(Double requested) {
+        if (requested == null) {
+            return ThreadLocalRandom.current().nextDouble() * 360.0;
+        }
+        double normalized = requested % 360.0;
+        return normalized < 0 ? normalized + 360.0 : normalized;
+    }
+
+    /** Lightweight summary of every active lake for the browser UI. */
+    public List<LakeSummary> listLakeSummaries() {
+        synchronized (assignmentLock) {
+            List<LakeSummary> out = new ArrayList<>();
+            for (LakeEntity lake : lakeRepository.findAll()) {
+                if (!lake.isActive()) {
+                    continue;
+                }
+                int boats = (int) memberRepository.countByLakeId(lake.getId());
+                out.add(new LakeSummary(lake.getId().toString(), lake.getName(),
+                    lake.getSize().name(), boats, lake.getCapacity(), lake.isBotsEnabled()));
+            }
+            return out;
+        }
+    }
+
+    public record LakeSummary(String id, String name, String size, int boats, int capacity, boolean bots) {
     }
 
     public void removeBoat(String boatId) {
@@ -182,24 +223,43 @@ public class SimulationEngine {
 
     // ---- Lake lifecycle (must be called while holding assignmentLock) -------
 
-    // The fullest active lake that still has a free slot, optionally excluding one.
-    private Optional<LakeEntity> findLakeWithSpace(UUID excludeId) {
+    // The fullest active lake of the given size that still has a free slot.
+    private Optional<LakeEntity> findLakeWithSpace(UUID excludeId, LakeSize size) {
         return lakeRepository.findAll().stream()
             .filter(LakeEntity::isActive)
+            .filter(lake -> size == null || lake.getSize() == size)
             .filter(lake -> excludeId == null || !lake.getId().equals(excludeId))
             .filter(lake -> memberRepository.countByLakeId(lake.getId()) < lake.getCapacity())
             .max(Comparator.comparingLong(lake -> memberRepository.countByLakeId(lake.getId())));
     }
 
-    private LakeEntity createLake() {
+    private LakeEntity createLake(LakeSize size, boolean bots, double windDirection, String name) {
         LakeEntity lake = new LakeEntity();
         lake.setId(UUID.randomUUID());
-        lake.setName("Akwen #" + (lakeRepository.count() + 1));
+        lake.setName(lakeName(name, size));
         lake.setSeed(ThreadLocalRandom.current().nextLong());
-        lake.setCapacity(DEFAULT_CAPACITY);
+        lake.setSize(size);
+        lake.setCapacity(size.getCapacity());
+        lake.setBotsEnabled(bots);
+        lake.setWindDirection(windDirection);
         lake.setActive(true);
         lake.setCreatedAt(OffsetDateTime.now());
         return lakeRepository.save(lake);
+    }
+
+    // The player's chosen lake name (sanitised), or a sensible default per size.
+    private String lakeName(String raw, LakeSize size) {
+        if (raw != null) {
+            String cleaned = raw.replaceAll("[\\p{Cntrl}]", "").trim();
+            if (!cleaned.isEmpty()) {
+                return cleaned.length() > 30 ? cleaned.substring(0, 30) : cleaned;
+            }
+        }
+        return switch (size) {
+            case SMALL -> "Mały akwen";
+            case MEDIUM -> "Średni akwen";
+            case LARGE -> "Duży akwen";
+        };
     }
 
     private void joinLake(String boatId, LakeEntity lake) {
@@ -208,7 +268,9 @@ public class SimulationEngine {
             lakeRepository.save(lake);
         }
         LakeWorld world = worlds.computeIfAbsent(lake.getId().toString(),
-            id -> new LakeWorld(id, lake.getName(), lake.getCapacity(), lake.getSeed()));
+            id -> new LakeWorld(id, lake.getName(), lake.getCapacity(), lake.getSeed(),
+                lake.getSize().getWorldWidth(), lake.getSize().getWorldHeight(),
+                lake.getWindDirection(), lake.isBotsEnabled()));
         world.addBoat(boatId, boatNames.getOrDefault(boatId, "Żeglarz"));
         boatToLake.put(boatId, lake.getId().toString());
 
@@ -231,13 +293,10 @@ public class SimulationEngine {
         }
         world.removeBoat(boatId);
         if (!world.hasHumans()) {
-            // Last human out: drop the in-memory world (and its bots) and park the
-            // lake as inactive.
+            // Last human out: drop the in-memory world (and its bots) and delete the
+            // lake row so it vanishes from the browser.
             worlds.remove(lakeId);
-            lakeRepository.findById(UUID.fromString(lakeId)).ifPresent(lake -> {
-                lake.setActive(false);
-                lakeRepository.save(lake);
-            });
+            lakeRepository.deleteById(UUID.fromString(lakeId));
         }
     }
 }

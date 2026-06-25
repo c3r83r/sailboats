@@ -3,7 +3,8 @@ import { AfterViewInit, Component, ElementRef, Input, OnChanges, OnDestroy, View
 import { BoatState, Buoy, HelmControlState, Island, Projectile, SailControl } from '../../../../store/simulation/simulation.models';
 
 type LakeRect = { x: number; y: number; width: number; height: number; radius: number };
-type WindParticle = { x: number; y: number; speedNorm: number; drift: number; length: number; alpha: number };
+type IslandMeta = { cx: number; cy: number; r: number; pts: { x: number; y: number }[] };
+type WindParticle = { x: number; y: number; speed: number; length: number; alpha: number; local: number; life: number };
 type Point = { x: number; y: number };
 type SailVisualState = 'down' | 'luff' | 'trim' | 'stall' | 'back';
 type BoatColor = { light: string; dark: string; edge: string; flag: string };
@@ -12,7 +13,7 @@ type BoatColor = { light: string; dark: string; edge: string; flag: string };
   selector: 'app-water-canvas',
   standalone: true,
   imports: [CommonModule],
-  template: '<div class="canvas-wrap"><canvas #canvas></canvas></div>',
+  template: '<div class="canvas-wrap" [class.fill]="fill"><canvas #canvas [class.dragging]="dragging" (wheel)="onWheel($event)" (pointerdown)="onPointerDown($event)" (pointermove)="onPointerMove($event)" (pointerup)="onPointerUp()" (pointerleave)="onPointerUp()" (dblclick)="resetView()"></canvas></div>',
   styles: [
     `
     .canvas-wrap {
@@ -25,12 +26,25 @@ type BoatColor = { light: string; dark: string; edge: string; flag: string };
       overflow: hidden;
       box-shadow: 0 18px 40px rgba(0, 0, 0, 0.28);
     }
+    .canvas-wrap.fill {
+      max-width: none;
+      aspect-ratio: auto;
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      border-radius: 0;
+      box-shadow: none;
+    }
     canvas {
       position: absolute;
       inset: 0;
       width: 100%;
       height: 100%;
       display: block;
+      cursor: grab;
+    }
+    canvas.dragging {
+      cursor: grabbing;
     }
     `,
   ],
@@ -58,14 +72,37 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
   private cssHeight = 0;
   // Stable leeward side near dead-downwind so the rig doesn't flip every frame.
   private leewardHysteresis = 1;
+  private islandMeta: IslandMeta[] = [];
+  private lastIslandsRef: Island[] | null = null;
   // Half-arc (rad) around dead downwind where the jib can be goose-winged
   // ("na motyla"); matches BUTTERFLY_BETA (162 deg) on the helm side.
   private readonly butterflyArc = (18 * Math.PI) / 180;
 
-  private readonly worldWidth = 20;
-  private readonly worldHeight = 20;
-  // Wind blows from the top of the screen to the bottom (matches the backend).
-  private readonly windDir = 90;
+  @Input() worldWidth = 28;
+  @Input() worldHeight = 15.75;
+  // Fill the parent (used by the app's fullscreen mode) instead of a 16:9 box.
+  @Input() fill = false;
+  // Wind blows toward this screen angle (0=right/E, 90=down/S); per-lake value.
+  @Input() windDirection = 90;
+  // Current (gusted) wind strength; scales the wind-line speed/brightness.
+  @Input() windStrength = 5;
+  // Camera zoom controlled by the mouse wheel; 1 = default framing (small lake fits).
+  private zoom = 1;
+  private readonly MAX_ZOOM = 4;
+  // World units shown across the canvas width at zoom 1 (= small lake width).
+  private readonly VIEW_SPAN = 28;
+  private readonly WIND_SCREEN_SPEED = 75;
+  // Reference view at the last reseed, to detect big zoom/teleport changes.
+  private seedPpu = 0;
+  private prevViewCx = 0;
+  private prevViewCy = 0;
+  // Camera: follow the player by default; dragging switches to a stable free look.
+  private followMode = true;
+  private camX = 0;
+  private camY = 0;
+  dragging = false;
+  private lastPointerX = 0;
+  private lastPointerY = 0;
 
   ngAfterViewInit(): void {
     this.setupResponsiveCanvas();
@@ -74,6 +111,169 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
   }
 
   ngOnChanges(): void {
+    // A new (bigger/smaller) lake changes how far you can zoom out.
+    this.zoom = this.clamp(this.zoom, this.minZoom(), this.MAX_ZOOM);
+    if (this.islands !== this.lastIslandsRef) {
+      this.lastIslandsRef = this.islands;
+      this.rebuildIslandMeta();
+    }
+    // The animation loop already redraws every frame; no extra draw needed here.
+  }
+
+  // Cache island centres/radii so the venturi (nozzle) effect is cheap to sample.
+  private rebuildIslandMeta(): void {
+    this.islandMeta = (this.islands ?? []).map((isl) => {
+      const n = isl.points.length || 1;
+      let cx = 0;
+      let cy = 0;
+      for (const p of isl.points) {
+        cx += p.x;
+        cy += p.y;
+      }
+      cx /= n;
+      cy /= n;
+      let r = 0;
+      for (const p of isl.points) {
+        r = Math.max(r, Math.hypot(p.x - cx, p.y - cy));
+      }
+      return { cx, cy, r, pts: isl.points };
+    });
+  }
+
+  // Even-odd point-in-polygon test against the island silhouette.
+  private pointInPolygon(x: number, y: number, pts: { x: number; y: number }[]): boolean {
+    let inside = false;
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      const xi = pts[i].x;
+      const yi = pts[i].y;
+      const xj = pts[j].x;
+      const yj = pts[j].y;
+      if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  }
+
+  // Local wind multiplier mirroring the backend: blocked over islands, slowed in
+  // their lee shadow, and funnelled (venturi) through a gap between two close
+  // islands whose connecting line is within 45 deg of perpendicular to the wind.
+  private windFieldFactor(x: number, y: number): number {
+    const rad = (this.windDirection * Math.PI) / 180;
+    const wx = Math.cos(rad);
+    const wy = Math.sin(rad);
+    let factor = 1;
+    let aMeta: IslandMeta | null = null;
+    let bMeta: IslandMeta | null = null;
+    let bestE = Infinity;
+    let secondE = Infinity;
+    let toAx = 0;
+    let toAy = 0;
+    let toBx = 0;
+    let toBy = 0;
+    for (const m of this.islandMeta) {
+      const dx = x - m.cx;
+      const dy = y - m.cy;
+      const c = Math.hypot(dx, dy);
+      const edge = c - m.r;
+      if (edge < 0 && this.pointInPolygon(x, y, m.pts)) {
+        factor = Math.min(factor, 0.12);
+      }
+      if (edge >= 0 && edge < 9) {
+        const along = dx * wx + dy * wy;
+        const across = Math.abs(-dx * wy + dy * wx);
+        const half = m.r * 1.1;
+        if (along > 0 && across < half) {
+          const a = 1 - Math.min(1, along / (9 + m.r));
+          const cc = 1 - Math.min(1, across / half);
+          factor *= 1 - 0.6 * a * cc;
+        }
+      }
+      if (edge < 6) {
+        const ux = c > 1e-6 ? dx / c : 0;
+        const uy = c > 1e-6 ? dy / c : 0;
+        if (edge < bestE) {
+          secondE = bestE;
+          bMeta = aMeta;
+          toBx = toAx;
+          toBy = toAy;
+          bestE = edge;
+          aMeta = m;
+          toAx = ux;
+          toAy = uy;
+        } else if (edge < secondE) {
+          secondE = edge;
+          bMeta = m;
+          toBx = ux;
+          toBy = uy;
+        }
+      }
+    }
+    if (aMeta && bMeta && secondE < 6) {
+      const between = -(toAx * toBx + toAy * toBy);
+      if (between > 0) {
+        const lx = bMeta.cx - aMeta.cx;
+        const ly = bMeta.cy - aMeta.cy;
+        const ll = Math.hypot(lx, ly);
+        if (ll > 1e-6) {
+          const align = Math.abs((lx / ll) * wx + (ly / ll) * wy);
+          if (align <= 0.70710678) {
+            const perp = 1 - align / 0.70710678;
+            const closeness = this.clamp(1 - (bestE + secondE) / 12, 0, 1);
+            factor *= 1 + 0.6 * perp * closeness * between;
+          }
+        }
+      }
+    }
+    return this.clamp(factor, 0.05, 1.7);
+  }
+
+  // Lowest zoom that still fits the whole lake; zoom out until it fills the view.
+  private minZoom(): number {
+    return this.VIEW_SPAN / this.worldWidth;
+  }
+
+  onWheel(event: WheelEvent): void {
+    event.preventDefault();
+    const factor = event.deltaY < 0 ? 1.12 : 1 / 1.12;
+    this.zoom = this.clamp(this.zoom * factor, this.minZoom(), this.MAX_ZOOM);
+    this.draw();
+  }
+
+  onPointerDown(event: PointerEvent): void {
+    this.dragging = true;
+    this.lastPointerX = event.clientX;
+    this.lastPointerY = event.clientY;
+    if (this.followMode) {
+      // Start the free look from wherever the camera currently sits.
+      this.camX = this.playerWorldX();
+      this.camY = this.playerWorldY();
+      this.followMode = false;
+    }
+    (event.target as Element)?.setPointerCapture?.(event.pointerId);
+  }
+
+  onPointerMove(event: PointerEvent): void {
+    if (!this.dragging) {
+      return;
+    }
+    const ppu = this.pixelsPerUnit(this.cssWidth, this.cssHeight);
+    // Grab-and-pull: dragging right shifts the view right (camera moves left).
+    this.camX -= (event.clientX - this.lastPointerX) / ppu;
+    this.camY -= (event.clientY - this.lastPointerY) / ppu;
+    this.lastPointerX = event.clientX;
+    this.lastPointerY = event.clientY;
+    this.draw();
+  }
+
+  onPointerUp(): void {
+    this.dragging = false;
+  }
+
+  resetView(): void {
+    // Double-click: snap back to following the player at the default zoom.
+    this.followMode = true;
+    this.zoom = this.clamp(1, this.minZoom(), this.MAX_ZOOM);
     this.draw();
   }
 
@@ -106,7 +306,12 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
       return;
     }
 
-    this.dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+    // Cap the backing-store resolution so a huge fullscreen canvas doesn't starve
+    // the main thread (which would make the helm feel laggy / "stick").
+    const rawDpr = Math.min(window.devicePixelRatio || 1, 2);
+    const maxW = 2200;
+    const maxH = 1300;
+    this.dpr = Math.max(1, Math.min(rawDpr, maxW / rect.width, maxH / rect.height));
     this.cssWidth = rect.width;
     this.cssHeight = rect.height;
     canvas.width = Math.round(rect.width * this.dpr);
@@ -145,7 +350,7 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
     const width = this.cssWidth;
     const height = this.cssHeight;
     const lake = this.getLakeRect(width, height);
-    const scale = lake.width / 880;
+    const scale = (lake.width / this.worldWidth) / 30;
 
     ctx.clearRect(0, 0, width, height);
     this.drawShore(ctx, width, height, lake);
@@ -156,13 +361,12 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
     this.drawIslands(ctx, lake, scale);
     this.drawBuoys(ctx, lake, scale);
     // Wind blows over the islands too, so draw the particles on top of them.
-    this.drawWindParticles(ctx);
+    this.drawWindParticles(ctx, lake);
 
     if (!this.boats.length) {
       this.drawPlaceholderBoat(ctx, lake, scale);
       ctx.restore();
       this.drawLakeBorder(ctx, lake);
-      this.drawWindLabel(ctx, lake);
       return;
     }
 
@@ -187,7 +391,7 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
       this.drawBoat(ctx, { x, y }, scale, boat.heading, boat.speed, main, jib, rudder, isPlayer, mainSt, jibSt, heel, color, anchored || sunk);
 
       if (anchored && !sunk) {
-        this.drawAnchorBadge(ctx, x, y, scale);
+        this.drawAnchorBadge(ctx, x, y, scale, boat.heading);
       }
       this.drawHealthBar(ctx, x, y, scale, health, sunk);
 
@@ -200,8 +404,6 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
 
     ctx.restore();
     this.drawLakeBorder(ctx, lake);
-    this.drawWindLabel(ctx, lake);
-    this.drawScoreboard(ctx, lake);
   }
 
   private drawBoat(
@@ -242,7 +444,7 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
 
     // Which side is leeward in the boat's local frame (+1 starboard / -1 port)
     // and which direction the wind is blowing TO in that same frame.
-    const windAngleLocal = ((this.windDir - heading) * Math.PI) / 180;
+    const windAngleLocal = ((this.windDirection - heading) * Math.PI) / 180;
     const lateral = Math.sin(windAngleLocal);
     // Hysteresis so the rig doesn't flip sides while running dead downwind.
     if (lateral > 0.08) {
@@ -295,11 +497,13 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
     ctx.restore();
   }
 
-  private drawAnchorBadge(ctx: CanvasRenderingContext2D, x: number, y: number, scale: number): void {
-    // Small anchor glyph above the boat, painted in screen space (no rotation).
+  private drawAnchorBadge(ctx: CanvasRenderingContext2D, x: number, y: number, scale: number, heading: number): void {
+    // Anchor glyph dropped at the bow (boats weather-vane bow-into-wind at anchor).
+    const rad = (heading * Math.PI) / 180;
+    const bow = 20 * scale;
     const r = Math.max(8, 10 * scale);
-    const cx = x;
-    const cy = y - 22 * scale;
+    const cx = x + Math.cos(rad) * bow;
+    const cy = y + Math.sin(rad) * bow;
     ctx.save();
     ctx.beginPath();
     ctx.arc(cx, cy, r, 0, Math.PI * 2);
@@ -609,16 +813,25 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
     }
   }
 
-  private drawWindParticles(ctx: CanvasRenderingContext2D): void {
+  private drawWindParticles(ctx: CanvasRenderingContext2D, lake: LakeRect): void {
+    const rad = (this.windDirection * Math.PI) / 180;
+    const dx = Math.cos(rad);
+    const dy = Math.sin(rad);
+    const gust = this.clamp(this.windStrength / 5, 0.45, 2.2);
     ctx.lineCap = 'round';
-    for (const particle of this.windParticles) {
-      const wobble = Math.sin(this.phase + particle.y * 0.02) * particle.drift;
-      const x = particle.x + wobble;
-      ctx.strokeStyle = `rgba(226, 247, 255, ${particle.alpha})`;
-      ctx.lineWidth = 1.1;
+    ctx.lineWidth = 1.1;
+    for (const p of this.windParticles) {
+      const sx = this.mapWorldX(p.x, lake);
+      const sy = this.mapWorldY(p.y, lake);
+      // Streak length in screen pixels (consistent at any zoom); gusts + venturi
+      // lengthen/brighten it, island lee shadows shorten/dim it.
+      const len = (7 + 7 * gust) * (0.4 + 0.6 * p.local) * p.length;
+      const bright = (0.18 + 0.24 * gust) * (p.local > 1.05 ? 1.5 : 1) * (p.local < 0.6 ? 0.4 : 1);
+      const a = this.clamp(bright * p.alpha, 0, 0.85);
+      ctx.strokeStyle = `rgba(226, 247, 255, ${a})`;
       ctx.beginPath();
-      ctx.moveTo(x, particle.y);
-      ctx.lineTo(x - wobble * 0.3, particle.y - particle.length);
+      ctx.moveTo(sx - dx * len, sy - dy * len);
+      ctx.lineTo(sx, sy);
       ctx.stroke();
     }
   }
@@ -1100,7 +1313,7 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
     // autotrim, so we set their sheets to the optimum for their current point of
     // sail - eased right out on a run, hauled in close-hauled - mirroring the
     // player's optimalSheet curve so their sails always read as perfectly set.
-    const windFrom = this.windDir + 180;
+    const windFrom = this.windDirection + 180;
     let beta = (((heading - windFrom) % 360) + 360) % 360;
     if (beta > 180) {
       beta = 360 - beta; // 0 = head to wind, 90 = beam reach, 180 = dead run
@@ -1114,67 +1327,127 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
   }
 
   private getLakeRect(width: number, height: number): LakeRect {
-    const marginX = width * 0.012;
-    const marginY = height * 0.02;
+    const ppu = this.pixelsPerUnit(width, height);
+    const halfX = width / 2 / ppu;
+    const halfY = height / 2 / ppu;
+    const camX = this.cameraAxis(this.followMode ? this.playerWorldX() : this.camX, halfX, this.worldWidth);
+    const camY = this.cameraAxis(this.followMode ? this.playerWorldY() : this.camY, halfY, this.worldHeight);
     return {
-      x: marginX,
-      y: marginY,
-      width: width - marginX * 2,
-      height: height - marginY * 2,
+      x: width / 2 - camX * ppu,
+      y: height / 2 - camY * ppu,
+      width: this.worldWidth * ppu,
+      height: this.worldHeight * ppu,
       radius: Math.min(width, height) * 0.03,
     };
   }
 
+  private pixelsPerUnit(width: number, height: number): number {
+    // Width-based so a 16:9 world fills the 16:9 canvas exactly at zoom 1.
+    return (width / this.VIEW_SPAN) * this.zoom;
+  }
+
+  // Keep the camera inside the world on big lakes; centre dimensions that fit.
+  private cameraAxis(target: number, half: number, worldDim: number): number {
+    if (worldDim <= half * 2) {
+      return worldDim / 2;
+    }
+    return this.clamp(target, half, worldDim - half);
+  }
+
+  private playerWorldX(): number {
+    const player = this.playerBoatId ? this.boats.find((b) => b.boatId === this.playerBoatId) : undefined;
+    return player ? player.x : this.worldWidth / 2;
+  }
+
+  private playerWorldY(): number {
+    const player = this.playerBoatId ? this.boats.find((b) => b.boatId === this.playerBoatId) : undefined;
+    return player ? player.y : this.worldHeight / 2;
+  }
+
   private mapWorldX(value: number, lake: LakeRect): number {
-    const clamped = this.clamp(value, 0, this.worldWidth);
-    return lake.x + (clamped / this.worldWidth) * lake.width;
+    return lake.x + (value / this.worldWidth) * lake.width;
   }
 
   private mapWorldY(value: number, lake: LakeRect): number {
-    const clamped = this.clamp(value, 0, this.worldHeight);
-    return lake.y + (clamped / this.worldHeight) * lake.height;
+    return lake.y + (value / this.worldHeight) * lake.height;
   }
 
   private initWindParticles(): void {
     if (this.cssWidth === 0) {
+      this.windParticles = [];
       return;
     }
-    const lake = this.getLakeRect(this.cssWidth, this.cssHeight);
-    this.windParticles = Array.from({ length: 130 }, () =>
-      this.createWindParticle(lake, lake.y + Math.random() * lake.height)
-    );
+    const rect = this.visibleWorldRect();
+    this.windParticles = Array.from({ length: 220 }, () => this.spawnParticle(rect));
   }
 
   private updateWindParticles(dt: number): void {
     if (this.cssWidth === 0) {
       return;
     }
-    const lake = this.getLakeRect(this.cssWidth, this.cssHeight);
     if (!this.windParticles.length) {
       this.initWindParticles();
       return;
     }
+    const rect = this.visibleWorldRect();
+    const viewCx = (rect.minX + rect.maxX) / 2;
+    const viewCy = (rect.minY + rect.maxY) / 2;
+    const viewW = rect.maxX - rect.minX;
+    // Redistribute the whole field when the view changes a lot (zoom or a sudden
+    // jump/teleport) so particles never stay bunched where the old view was.
+    const zoomRatio = this.seedPpu > 0 ? rect.ppu / this.seedPpu : 0;
+    const teleported = Math.hypot(viewCx - this.prevViewCx, viewCy - this.prevViewCy) > viewW * 0.5;
+    if (this.seedPpu === 0 || zoomRatio > 1.22 || zoomRatio < 0.82 || teleported) {
+      for (const particle of this.windParticles) {
+        Object.assign(particle, this.spawnParticle(rect));
+      }
+      this.seedPpu = rect.ppu;
+    }
+    this.prevViewCx = viewCx;
+    this.prevViewCy = viewCy;
 
-    for (const particle of this.windParticles) {
-      particle.y += particle.speedNorm * lake.height * dt;
-
-      if (particle.y - particle.length > lake.y + lake.height) {
-        const next = this.createWindParticle(lake, lake.y - Math.random() * lake.height * 0.2);
-        Object.assign(particle, next);
+    const rad = (this.windDirection * Math.PI) / 180;
+    const dx = Math.cos(rad);
+    const dy = Math.sin(rad);
+    const gust = this.clamp(this.windStrength / 5, 0.45, 2.2);
+    for (const p of this.windParticles) {
+      p.local = this.windFieldFactor(p.x, p.y);
+      // Speed is normalised to the screen so motion looks the same at any zoom.
+      const worldV = (this.WIND_SCREEN_SPEED * p.speed * gust * p.local) / rect.ppu;
+      p.x += dx * worldV * dt;
+      p.y += dy * worldV * dt;
+      p.life -= dt;
+      // Recycle on timeout or when it leaves the view, re-seeding anywhere on
+      // screen so the field is always full (never "fills in" from an edge).
+      if (p.life <= 0 || p.x < rect.minX || p.x > rect.maxX || p.y < rect.minY || p.y > rect.maxY) {
+        Object.assign(p, this.spawnParticle(rect));
       }
     }
   }
 
-  private createWindParticle(lake: LakeRect, y: number): WindParticle {
-    // speedNorm is the fraction of the lake height travelled per second,
-    // giving a calm, constant drift (~7-12s top to bottom).
+  // The world-space rectangle currently visible through the camera (+ ppu).
+  private visibleWorldRect(): { minX: number; minY: number; maxX: number; maxY: number; ppu: number } {
+    const lake = this.getLakeRect(this.cssWidth, this.cssHeight);
+    const ppu = lake.width / this.worldWidth;
+    const m = 1.5;
     return {
-      x: lake.x + Math.random() * lake.width,
-      y,
-      speedNorm: 0.08 + Math.random() * 0.06,
-      drift: 1 + Math.random() * 3,
-      length: lake.height * (0.015 + Math.random() * 0.02),
-      alpha: 0.25 + Math.random() * 0.4,
+      minX: (0 - lake.x) / ppu - m,
+      maxX: (this.cssWidth - lake.x) / ppu + m,
+      minY: (0 - lake.y) / ppu - m,
+      maxY: (this.cssHeight - lake.y) / ppu + m,
+      ppu,
+    };
+  }
+
+  private spawnParticle(rect: { minX: number; minY: number; maxX: number; maxY: number }): WindParticle {
+    return {
+      x: rect.minX + Math.random() * (rect.maxX - rect.minX),
+      y: rect.minY + Math.random() * (rect.maxY - rect.minY),
+      speed: 0.8 + Math.random() * 0.5,
+      length: 0.7 + Math.random() * 0.6,
+      alpha: 0.5 + Math.random() * 0.5,
+      local: 1,
+      life: 1.2 + Math.random() * 3.0,
     };
   }
 

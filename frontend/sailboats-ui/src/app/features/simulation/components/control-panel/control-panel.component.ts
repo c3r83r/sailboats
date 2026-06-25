@@ -10,7 +10,7 @@ export type PointOfSailLabel = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad
   standalone: true,
   imports: [CommonModule],
   template: `
-    <section class="deck">
+    <section class="deck" [class.overlay]="overlay">
       <header class="deck-head">
         <h2>Control Deck</h2>
         <span class="chips">
@@ -27,7 +27,7 @@ export type PointOfSailLabel = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad
         <div class="stat">
           <span class="stat-label">Wiatr</span>
           <span class="stat-value">{{ windStrength | number : '1.0-1' }}<i>kn</i></span>
-          <span class="wind-arrow" [style.transform]="'rotate(' + windDirection + 'deg)'">&#8595;</span>
+          <span class="wind-arrow" [style.transform]="'rotate(' + (windDirection - 90) + 'deg)'">&#8595;</span>
         </div>
       </div>
 
@@ -142,6 +142,11 @@ export type PointOfSailLabel = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad
       gap: 12px;
       box-shadow: 0 18px 40px rgba(0, 0, 0, 0.32);
       backdrop-filter: blur(6px);
+    }
+
+    .deck.overlay {
+      background: linear-gradient(160deg, rgba(13, 42, 71, 0.52), rgba(8, 28, 49, 0.52));
+      backdrop-filter: blur(12px);
     }
 
     .deck-head {
@@ -396,6 +401,7 @@ export class ControlPanelComponent {
   @Input() pointOfSail: PointOfSailLabel = 'irons';
   @Input() boatSpeed = 0;
   @Input() autoTrim = false;
+  @Input() overlay = false;
   @Input() health = 100;
   @Input() cannonCharge = 0;
   @Input() cannonCooldown = 0;

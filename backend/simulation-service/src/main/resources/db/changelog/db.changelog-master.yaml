@@ -74,3 +74,35 @@ databaseChangeLog:
             referencedTableName: lakes
             referencedColumnNames: id
             onDelete: CASCADE
+  - changeSet:
+      id: simulation-003-lake-size-and-bots
+      author: copilot
+      changes:
+        - addColumn:
+            tableName: lakes
+            columns:
+              - column:
+                  name: size
+                  type: VARCHAR(10)
+                  defaultValue: SMALL
+                  constraints:
+                    nullable: false
+              - column:
+                  name: bots_enabled
+                  type: BOOLEAN
+                  defaultValueBoolean: true
+                  constraints:
+                    nullable: false
+  - changeSet:
+      id: simulation-004-lake-wind
+      author: copilot
+      changes:
+        - addColumn:
+            tableName: lakes
+            columns:
+              - column:
+                  name: wind_direction
+                  type: DOUBLE PRECISION
+                  defaultValueNumeric: 90
+                  constraints:
+                    nullable: false

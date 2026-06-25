@@ -8,8 +8,8 @@ import { ControlPanelComponent } from './features/simulation/components/control-
 import { WaterCanvasComponent } from './features/simulation/components/water-canvas/water-canvas.component';
 import { AuthService } from './core/services/auth.service';
 import { SimulationActions } from './store/simulation/simulation.actions';
-import { selectBoats, selectBuoys, selectConnected, selectControls, selectIslands, selectLake, selectPlayerBoatId, selectProjectiles, selectWind } from './store/simulation/simulation.selectors';
-import { FireSide, HelmControlState } from './store/simulation/simulation.models';
+import { selectBoats, selectBuoys, selectConnected, selectControls, selectIslands, selectLake, selectLakes, selectPlayerBoatId, selectProjectiles, selectWind, selectWorld } from './store/simulation/simulation.selectors';
+import { BoatState, FireSide, HelmControlState, LakeSize, LakeSummary } from './store/simulation/simulation.models';
 
 export type SailVisualState = 'down' | 'luff' | 'trim' | 'stall' | 'back';
 export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | 'deeprun' | 'run';
@@ -58,6 +58,63 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
         </form>
       </div>
 
+      <div class="lake-browser" *ngIf="showLakeBrowser">
+        <div class="browser-card" *ngIf="!showCreatePanel">
+          <div class="browser-head">
+            <h2>Wybierz akwen</h2>
+            <button type="button" class="browser-close" (click)="closeLakeBrowser()">✕</button>
+          </div>
+          <div class="browser-cols">
+            <div class="browser-col" *ngFor="let col of sizeColumns">
+              <h3>{{ col.label }}</h3>
+              <ul class="lake-list">
+                <li
+                  *ngFor="let l of lakesOf(col.size)"
+                  [class.current]="l.id === currentLakeId"
+                  (click)="joinLake(l.id)">
+                  <span class="ll-name">{{ l.name }}</span>
+                  <span class="ll-meta">{{ l.boats }}/{{ l.capacity }} · {{ l.bots ? 'boty' : 'bez botów' }}</span>
+                </li>
+                <li class="ll-empty" *ngIf="lakesOf(col.size).length === 0">brak akwenów</li>
+              </ul>
+              <button type="button" class="new-btn" (click)="openCreatePanel(col.size)">+ Nowy</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="browser-card create" *ngIf="showCreatePanel">
+          <div class="browser-head">
+            <h2>Nowy akwen — {{ createSizeLabel }}</h2>
+            <button type="button" class="browser-close" (click)="backToBrowser()">✕</button>
+          </div>
+          <label class="create-row create-name">
+            <span>Nazwa</span>
+            <input
+              type="text"
+              name="createName"
+              [(ngModel)]="createName"
+              maxlength="30"
+              placeholder="Nazwa akwenu"
+              autocomplete="off" />
+          </label>
+          <label class="create-row">
+            <input type="checkbox" name="createBots" [(ngModel)]="createBots" />
+            <span>Boty na akwenie</span>
+          </label>
+          <label class="create-row create-wind">
+            <span>Kierunek wiatru</span>
+            <select name="createWind" [(ngModel)]="createWind">
+              <option *ngFor="let w of windOptions" [ngValue]="w.value">{{ w.label }}</option>
+            </select>
+          </label>
+          <p class="create-hint">Więcej opcji (wielkość i liczba wysp, tryb regat…) pojawi się tutaj wkrótce.</p>
+          <div class="create-actions">
+            <button type="button" class="secondary" (click)="backToBrowser()">Wstecz</button>
+            <button type="button" class="primary" (click)="createLake()">Stwórz i wpłyń</button>
+          </div>
+        </div>
+      </div>
+
       <header>
         <div class="brand">
           <h1>Sailboats</h1>
@@ -66,7 +123,7 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
         <div class="lake" *ngIf="lake$ | async as lake">
           <span class="lake-name">{{ lake.name ?? 'Akwen' }}</span>
           <span class="lake-count">{{ lake.boats }}/{{ lake.capacity }} łódek</span>
-          <button type="button" class="lake-btn" (click)="changeLake()" [disabled]="(connected$ | async) !== true">
+          <button type="button" class="lake-btn" (click)="openLakeBrowser()" [disabled]="(connected$ | async) !== true">
             Zmień akwen
           </button>
         </div>
@@ -84,20 +141,65 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
         <span><b>T</b> auto-trym &middot; <b>K</b> kotwica &middot; <b>M</b> motyl (fordewind)</span>
       </div>
 
-      <section class="content">
-        <app-water-canvas
-          [boats]="(boats$ | async) ?? []"
-          [projectiles]="(projectiles$ | async) ?? []"
-          [buoys]="(buoys$ | async) ?? []"
-          [islands]="(islands$ | async) ?? []"
-          [controls]="controls"
-          [playerBoatId]="playerBoatId"
-          [mainState]="mainState"
-          [jibState]="jibState"
-          [heel]="heel">
-        </app-water-canvas>
+      <section class="content" [class.fullscreen]="fullscreen">
+        <aside class="info-panel">
+          <div class="ip-section">
+            <h3 class="ip-lake">{{ (lake$ | async)?.name ?? 'Akwen' }}</h3>
+            <p class="ip-sub">{{ (lake$ | async)?.boats ?? 0 }} łódek graczy</p>
+          </div>
+
+          <div class="ip-section ip-compass">
+            <div class="compass">
+              <span class="c-card c-n">N</span>
+              <span class="c-card c-e">E</span>
+              <span class="c-card c-s">S</span>
+              <span class="c-card c-w">W</span>
+              <div class="needle" [style.transform]="'rotate(' + (windDirection + 90) + 'deg)'"></div>
+            </div>
+            <span class="ip-label">Wiatr</span>
+          </div>
+
+          <div class="ip-section ip-scores">
+            <div class="ip-scores-head"><span>Gracz</span><span title="Zabójstwa">Z</span><span title="Śmierci">Ś</span></div>
+            <div class="ip-row" *ngFor="let p of players" [class.me]="p.boatId === playerBoatId">
+              <span class="ip-name">{{ p.name ?? p.boatId }}</span>
+              <span>{{ p.kills ?? 0 }}</span>
+              <span>{{ p.deaths ?? 0 }}</span>
+            </div>
+            <p class="ip-empty" *ngIf="!players.length">brak graczy</p>
+          </div>
+        </aside>
+
+        <div class="canvas-stage">
+          <app-water-canvas
+            [boats]="(boats$ | async) ?? []"
+            [projectiles]="(projectiles$ | async) ?? []"
+            [buoys]="(buoys$ | async) ?? []"
+            [islands]="(islands$ | async) ?? []"
+            [worldWidth]="((world$ | async)?.width) ?? 28"
+            [worldHeight]="((world$ | async)?.height) ?? 15.75"
+            [windDirection]="windDirection"
+            [windStrength]="windStrength"
+            [fill]="fullscreen"
+            [controls]="controls"
+            [playerBoatId]="playerBoatId"
+            [mainState]="mainState"
+            [jibState]="jibState"
+            [heel]="heel">
+          </app-water-canvas>
+          <button
+            type="button"
+            class="fs-btn"
+            (click)="toggleFullscreen()"
+            [title]="fullscreen ? 'Wyjdź z pełnego ekranu' : 'Pełny ekran'"
+            aria-label="Pełny ekran">
+            <svg *ngIf="!fullscreen" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+            <svg *ngIf="fullscreen" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 8V6a1 1 0 0 1 1-1h2M19 8V6a1 1 0 0 0-1-1h-2M5 16v2a1 1 0 0 0 1 1h2M19 16v2a1 1 0 0 1-1 1h-2"/></svg>
+          </button>
+        </div>
 
         <app-control-panel
+          [overlay]="fullscreen"
           [controls]="controls"
           [mainThrust]="mainThrust"
           [jibThrust]="jibThrust"
@@ -164,6 +266,7 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
       font-weight: 800;
       letter-spacing: 0.08em;
       font-size: 0.78rem;
+      backdrop-filter: blur(6px);
       box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
     }
     .status.online {
@@ -175,10 +278,11 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
       display: flex;
       align-items: center;
       gap: 10px;
-      background: rgba(255, 255, 255, 0.06);
-      border: 1px solid rgba(255, 255, 255, 0.1);
+      background: rgba(11, 38, 62, 0.55);
+      border: 1px solid rgba(143, 227, 255, 0.14);
       border-radius: 999px;
       padding: 5px 6px 5px 16px;
+      backdrop-filter: blur(6px);
     }
 
     .lake + .status {
@@ -324,19 +428,416 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
       filter: brightness(1.15);
     }
 
+    .lake-browser {
+      position: fixed;
+      inset: 0;
+      z-index: 60;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(2, 8, 16, 0.78);
+      backdrop-filter: blur(3px);
+    }
+
+    .browser-card {
+      width: min(920px, 94vw);
+      max-height: 88vh;
+      overflow: auto;
+      padding: 22px 24px;
+      border-radius: 16px;
+      border: 1px solid rgba(143, 227, 255, 0.3);
+      background: rgba(8, 18, 30, 0.97);
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+    }
+
+    .browser-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 14px;
+    }
+
+    .browser-head h2 {
+      margin: 0;
+      font-size: 1.2rem;
+    }
+
+    .browser-close {
+      background: none;
+      border: none;
+      color: #9fc7df;
+      font-size: 1.1rem;
+      cursor: pointer;
+    }
+
+    .browser-cols {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+    }
+
+    .browser-col {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 12px;
+      border-radius: 12px;
+      background: rgba(12, 26, 40, 0.7);
+      border: 1px solid rgba(143, 227, 255, 0.16);
+    }
+
+    .browser-col h3 {
+      margin: 0;
+      text-align: center;
+      font-size: 1rem;
+      letter-spacing: 0.04em;
+      color: #cfeeff;
+    }
+
+    .lake-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-height: 60px;
+    }
+
+    .lake-list li {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: rgba(8, 18, 30, 0.8);
+      border: 1px solid rgba(143, 227, 255, 0.18);
+      cursor: pointer;
+      transition: filter 0.12s ease;
+    }
+
+    .lake-list li:hover:not(.ll-empty) {
+      filter: brightness(1.25);
+    }
+
+    .lake-list li.current {
+      border-color: rgba(255, 209, 102, 0.7);
+      box-shadow: inset 0 0 0 1px rgba(255, 209, 102, 0.4);
+    }
+
+    .ll-name {
+      font-weight: 700;
+      font-size: 0.9rem;
+    }
+
+    .ll-meta {
+      font-size: 0.75rem;
+      color: #9fc7df;
+    }
+
+    .ll-empty {
+      cursor: default;
+      text-align: center;
+      color: #6f8aa0;
+      font-size: 0.8rem;
+      background: none;
+      border: 1px dashed rgba(143, 227, 255, 0.18);
+    }
+
+    .new-btn {
+      margin-top: auto;
+      padding: 8px;
+      border-radius: 8px;
+      border: 1px solid rgba(143, 227, 255, 0.4);
+      background: rgba(143, 227, 255, 0.14);
+      color: #eaf6ff;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .new-btn:hover {
+      filter: brightness(1.2);
+    }
+
+    .create-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 0.95rem;
+      margin: 6px 0;
+    }
+
+    .create-hint {
+      color: #8fb6cc;
+      font-size: 0.82rem;
+      margin: 4px 0 16px;
+    }
+
+    .create-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+    }
+
+    .create-actions .secondary,
+    .create-actions .primary {
+      padding: 9px 16px;
+      border-radius: 9px;
+      cursor: pointer;
+      font-weight: 700;
+      border: 1px solid rgba(143, 227, 255, 0.35);
+    }
+
+    .create-actions .secondary {
+      background: rgba(8, 18, 30, 0.7);
+      color: #cfeeff;
+    }
+
+    .create-actions .primary {
+      background: linear-gradient(90deg, rgba(143, 227, 255, 0.3), rgba(255, 209, 102, 0.3));
+      color: #eaf6ff;
+    }
+
+    .create-wind {
+      justify-content: space-between;
+    }
+
+    .create-wind select {
+      padding: 6px 8px;
+      border-radius: 8px;
+      background: rgba(8, 18, 30, 0.9);
+      color: #eaf6ff;
+      border: 1px solid rgba(143, 227, 255, 0.35);
+    }
+
+    .create-name {
+      justify-content: space-between;
+    }
+
+    .create-name input {
+      padding: 6px 8px;
+      border-radius: 8px;
+      background: rgba(8, 18, 30, 0.9);
+      color: #eaf6ff;
+      border: 1px solid rgba(143, 227, 255, 0.35);
+      width: 170px;
+      outline: none;
+    }
+
+    @media (max-width: 720px) {
+      .browser-cols {
+        grid-template-columns: 1fr;
+      }
+    }
+
     .content {
       display: grid;
       gap: 18px;
-      grid-template-columns: minmax(0, 1fr) 340px;
+      grid-template-columns: 230px minmax(0, 1fr) 340px;
       align-items: start;
+    }
+
+    .canvas-stage {
+      position: relative;
+      min-width: 0;
+    }
+
+    .canvas-stage app-water-canvas {
+      display: block;
+      width: 100%;
+    }
+
+    .content.fullscreen app-water-canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    .fs-btn {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      z-index: 5;
+      width: 38px;
+      height: 38px;
+      display: grid;
+      place-items: center;
+      border-radius: 10px;
+      border: 1px solid rgba(143, 227, 255, 0.35);
+      background: rgba(8, 24, 40, 0.55);
+      color: #d8f4ff;
+      cursor: pointer;
+      backdrop-filter: blur(6px);
+      transition: background 0.15s ease, transform 0.15s ease;
+    }
+
+    .fs-btn:hover {
+      background: rgba(143, 227, 255, 0.22);
+      transform: translateY(-1px);
+    }
+
+    /* Fullscreen: lake fills the viewport, panels float semi-transparent over it. */
+    .content.fullscreen {
+      position: fixed;
+      inset: 0;
+      z-index: 60;
+      display: block;
+      gap: 0;
+      background: var(--bg-deep, #05243f);
+    }
+
+    .content.fullscreen .canvas-stage {
+      position: absolute;
+      inset: 0;
+    }
+
+    .content.fullscreen .info-panel {
+      position: absolute;
+      top: 14px;
+      left: 14px;
+      width: 232px;
+      max-height: calc(100vh - 28px);
+      overflow: auto;
+      z-index: 4;
+      background: rgba(8, 24, 40, 0.42);
+      backdrop-filter: blur(12px);
+    }
+
+    .content.fullscreen app-control-panel {
+      position: absolute;
+      top: 64px;
+      right: 14px;
+      width: 340px;
+      max-height: calc(100vh - 78px);
+      overflow: auto;
+      z-index: 4;
+    }
+
+    .info-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      padding: 14px;
+      border-radius: 16px;
+      background: rgba(11, 38, 62, 0.55);
+      border: 1px solid rgba(143, 227, 255, 0.14);
+      backdrop-filter: blur(6px);
+      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.25);
+    }
+
+    .ip-section {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .ip-lake {
+      margin: 0;
+      font-size: 1.05rem;
+      color: #eaf6ff;
+    }
+
+    .ip-sub {
+      margin: 0;
+      font-size: 0.82rem;
+      color: #9fc7df;
+    }
+
+    .ip-compass {
+      align-items: center;
+      gap: 6px;
+    }
+
+    .compass {
+      position: relative;
+      width: 92px;
+      height: 92px;
+      border-radius: 50%;
+      border: 2px solid rgba(143, 227, 255, 0.4);
+      background: radial-gradient(circle, rgba(12, 26, 40, 0.9), rgba(8, 18, 30, 0.95));
+    }
+
+    .c-card {
+      position: absolute;
+      font-size: 0.7rem;
+      color: #9fc7df;
+      transform: translate(-50%, -50%);
+    }
+
+    .c-n { left: 50%; top: 11px; }
+    .c-s { left: 50%; top: calc(100% - 11px); }
+    .c-e { left: calc(100% - 10px); top: 50%; }
+    .c-w { left: 10px; top: 50%; }
+
+    .needle {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 0;
+      height: 0;
+      border-left: 6px solid transparent;
+      border-right: 6px solid transparent;
+      border-bottom: 34px solid #ffd166;
+      transform-origin: 50% 100%;
+      margin: -34px 0 0 -6px;
+    }
+
+    .ip-label {
+      font-size: 0.78rem;
+      color: #9fc7df;
+      letter-spacing: 0.05em;
+    }
+
+    .ip-scores {
+      gap: 4px;
+    }
+
+    .ip-scores-head,
+    .ip-row {
+      display: grid;
+      grid-template-columns: 1fr 22px 22px;
+      gap: 6px;
+      font-size: 0.82rem;
+      align-items: center;
+    }
+
+    .ip-scores-head {
+      color: #7f9bb0;
+      font-size: 0.72rem;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      padding-bottom: 4px;
+    }
+
+    .ip-row.me .ip-name {
+      color: #ffe19a;
+      font-weight: 700;
+    }
+
+    .ip-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .ip-empty {
+      color: #6f8aa0;
+      font-size: 0.78rem;
+      margin: 4px 0 0;
+    }
+
+    @media (max-width: 980px) {
+      .content {
+        grid-template-columns: 1fr;
+      }
     }
 
     .kbd-help {
       margin: 0;
       padding: 11px 14px;
       border-radius: 12px;
-      background: rgba(255, 255, 255, 0.06);
-      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(11, 38, 62, 0.5);
+      border: 1px solid rgba(143, 227, 255, 0.12);
+      backdrop-filter: blur(6px);
       font-size: 0.86rem;
       display: flex;
       flex-wrap: wrap;
@@ -388,12 +889,46 @@ export class AppComponent implements OnInit, OnDestroy {
 
   // Welcome screen: the player logs in or registers before the world connects.
   started = false;
+  // Fullscreen mode: lake fills the screen, side panels float over it.
+  fullscreen = false;
   authMode: 'login' | 'register' = 'login';
   email = '';
   password = '';
   displayName = '';
   authError = '';
   authBusy = false;
+
+  // Lake browser overlay.
+  showLakeBrowser = false;
+  showCreatePanel = false;
+  createSize: LakeSize = 'SMALL';
+  createBots = true;
+  createName = '';
+  lakes: LakeSummary[] = [];
+  currentLakeId: string | null = null;
+  readonly sizeColumns: { size: LakeSize; label: string }[] = [
+    { size: 'SMALL', label: 'Małe' },
+    { size: 'MEDIUM', label: 'Średnie' },
+    { size: 'LARGE', label: 'Duże' },
+  ];
+  createWind: number | null = null;
+  readonly windOptions: { label: string; value: number | null }[] = [
+    { label: 'Losowy', value: null },
+    { label: 'Płn (N)', value: 90 },
+    { label: 'Płn-wsch (NE)', value: 135 },
+    { label: 'Wsch (E)', value: 180 },
+    { label: 'Płd-wsch (SE)', value: 225 },
+    { label: 'Płd (S)', value: 270 },
+    { label: 'Płd-zach (SW)', value: 315 },
+    { label: 'Zach (W)', value: 0 },
+    { label: 'Płn-zach (NW)', value: 45 },
+  ];
+  // Wind direction for the side-panel compass.
+  windDirection = 0;
+  // Gusted wind strength (drives the wind-line speed/brightness on the canvas).
+  windStrength = 5;
+  // All boats from the last snapshot (used to build the player scoreboard).
+  boatsList: BoatState[] = [];
 
   // Live readouts for the control deck.
   mainThrust = 0;
@@ -424,9 +959,13 @@ export class AppComponent implements OnInit, OnDestroy {
   controls$ = this.store.select(selectControls);
   playerBoatId$ = this.store.select(selectPlayerBoatId);
   lake$ = this.store.select(selectLake);
+  world$ = this.store.select(selectWorld);
 
   // Wind blows straight down the screen (matches the backend constant).
-  private readonly windDir = 90;
+  // Live wind direction of the current lake (each lake can differ / be random).
+  private get windDir(): number {
+    return this.windDirection;
+  }
   // beta (angle off dead-downwind) at/above which the jib can be winged ("motyl").
   private readonly BUTTERFLY_BETA = 162;
   // Persistent side the jib is poled out to on a run: -1/+1 = winged on that
@@ -478,10 +1017,22 @@ export class AppComponent implements OnInit, OnDestroy {
       this.controls = controls;
     });
 
+    this.store.select(selectLakes).pipe(takeUntilDestroyed(this.destroyRef)).subscribe((lakes) => {
+      this.lakes = lakes;
+    });
+    this.lake$.pipe(takeUntilDestroyed(this.destroyRef)).subscribe((lake) => {
+      this.currentLakeId = lake.id;
+    });
+    this.wind$.pipe(takeUntilDestroyed(this.destroyRef)).subscribe((wind) => {
+      this.windDirection = wind.direction;
+      this.windStrength = wind.strength;
+    });
+
     combineLatest([this.boats$, this.playerBoatId$])
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe(([boats, playerBoatId]) => {
         this.playerBoatId = playerBoatId;
+        this.boatsList = boats;
         if (!boats.length || !playerBoatId) {
           return;
         }
@@ -496,8 +1047,16 @@ export class AppComponent implements OnInit, OnDestroy {
       });
 
     // Continuous helm loop: ramps the rudder, auto-centers it, trims sails and
-    // recomputes the effective drive even while the boat is turning.
-    this.loopHandle = setInterval(() => this.tickControls(0.04), 40);
+    // recomputes the effective drive even while the boat is turning. Uses the
+    // real elapsed time so it stays smooth even when the frame budget is tight
+    // (e.g. a large fullscreen canvas).
+    let lastHelm = performance.now();
+    this.loopHandle = setInterval(() => {
+      const now = performance.now();
+      const dt = Math.min(0.1, (now - lastHelm) / 1000);
+      lastHelm = now;
+      this.tickControls(dt);
+    }, 40);
   }
 
   ngOnDestroy(): void {
@@ -521,6 +1080,11 @@ export class AppComponent implements OnInit, OnDestroy {
 
     // Welcome screen is up: page scroll is already blocked, ignore gameplay keys.
     if (!this.started) {
+      return;
+    }
+
+    // Lake browser overlay is open: don't drive the boat or fire the guns.
+    if (this.showLakeBrowser) {
       return;
     }
 
@@ -629,10 +1193,62 @@ export class AppComponent implements OnInit, OnDestroy {
     this.store.dispatch(SimulationActions.fire({ side, power }));
   }
 
-  changeLake(): void {
-    this.store.dispatch(SimulationActions.changeLake());
+  openLakeBrowser(): void {
+    this.showLakeBrowser = true;
+    this.showCreatePanel = false;
     // Drop focus off the button so arrow/space keys can't re-trigger it.
     (document.activeElement as HTMLElement | null)?.blur();
+  }
+
+  closeLakeBrowser(): void {
+    this.showLakeBrowser = false;
+    this.showCreatePanel = false;
+  }
+
+  lakesOf(size: LakeSize): LakeSummary[] {
+    return this.lakes.filter((lake) => lake.size === size);
+  }
+
+  joinLake(lakeId: string): void {
+    if (lakeId !== this.currentLakeId) {
+      this.store.dispatch(SimulationActions.joinLake({ lakeId }));
+    }
+    this.closeLakeBrowser();
+  }
+
+  openCreatePanel(size: LakeSize): void {
+    this.createSize = size;
+    this.createBots = true;
+    this.createWind = null;
+    this.createName = '';
+    this.showCreatePanel = true;
+  }
+
+  backToBrowser(): void {
+    this.showCreatePanel = false;
+  }
+
+  createLake(): void {
+    this.store.dispatch(
+      SimulationActions.createLake({
+        size: this.createSize,
+        bots: this.createBots,
+        windDirection: this.createWind,
+        name: this.createName.trim(),
+      })
+    );
+    this.closeLakeBrowser();
+  }
+
+  get createSizeLabel(): string {
+    return this.sizeColumns.find((col) => col.size === this.createSize)?.label ?? '';
+  }
+
+  get players(): BoatState[] {
+    return this.boatsList
+      .filter((boat) => !boat.bot)
+      .slice()
+      .sort((a, b) => (b.kills ?? 0) - (a.kills ?? 0) || (a.deaths ?? 0) - (b.deaths ?? 0));
   }
 
   start(): void {
@@ -679,6 +1295,28 @@ export class AppComponent implements OnInit, OnDestroy {
       next: () => window.location.reload(),
       error: () => window.location.reload(),
     });
+  }
+
+  toggleFullscreen(): void {
+    this.fullscreen = !this.fullscreen;
+    try {
+      if (this.fullscreen && !document.fullscreenElement) {
+        document.documentElement.requestFullscreen?.();
+      } else if (!this.fullscreen && document.fullscreenElement) {
+        document.exitFullscreen?.();
+      }
+    } catch {
+      /* Fullscreen API unavailable: the CSS fullscreen layout still applies. */
+    }
+    (document.activeElement as HTMLElement | null)?.blur();
+  }
+
+  @HostListener('document:fullscreenchange')
+  onFullscreenChange(): void {
+    // Keep state in sync when the user exits fullscreen via Esc / browser UI.
+    if (!document.fullscreenElement && this.fullscreen) {
+      this.fullscreen = false;
+    }
   }
 
   // Connect to the simulation once we hold a valid access token.

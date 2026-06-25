@@ -2,10 +2,12 @@ package com.sailboats.simulation.websocket;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sailboats.common.dto.SimulationSnapshotDto;
+import com.sailboats.simulation.domain.LakeSize;
 import com.sailboats.simulation.model.ControlInput;
 import com.sailboats.simulation.service.SimulationEngine;
 import java.io.IOException;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
@@ -33,6 +35,8 @@ public class SimulationWebSocketHandler extends TextWebSocketHandler {
         t.setDaemon(true);
         return t;
     });
+    private volatile List<SimulationEngine.LakeSummary> cachedLakes = List.of();
+    private volatile long cachedLakesAt = 0;
 
     public SimulationWebSocketHandler(ObjectMapper objectMapper, SimulationEngine simulationEngine) {
         this.objectMapper = objectMapper;
@@ -67,8 +71,13 @@ public class SimulationWebSocketHandler extends TextWebSocketHandler {
         ControlPayload payload = objectMapper.readValue(message.getPayload(), ControlPayload.class);
         if ("fire".equals(payload.type())) {
             simulationEngine.fire(boatId, payload.side(), payload.power());
-        } else if ("changeLake".equals(payload.type())) {
-            String lakeId = simulationEngine.changeLake(boatId);
+        } else if ("joinLake".equals(payload.type())) {
+            String lakeId = simulationEngine.joinExistingLake(boatId, payload.lakeId());
+            session.getAttributes().put("lakeId", lakeId);
+        } else if ("createLake".equals(payload.type())) {
+            LakeSize size = LakeSize.fromString(payload.size(), LakeSize.SMALL);
+            String lakeId = simulationEngine.createAndJoinLake(
+                boatId, size, payload.bots(), payload.windDirection(), payload.name());
             session.getAttributes().put("lakeId", lakeId);
         } else {
             simulationEngine.updateControls(
@@ -117,6 +126,14 @@ public class SimulationWebSocketHandler extends TextWebSocketHandler {
 
     private void broadcastSnapshots(Map<String, SimulationSnapshotDto> snapshotsByLake) {
         try {
+            // The lake list changes slowly; refresh it at most once a second instead
+            // of hitting the DB on every 20 fps broadcast.
+            long now = System.currentTimeMillis();
+            if (now - cachedLakesAt > 1000) {
+                cachedLakes = simulationEngine.listLakeSummaries();
+                cachedLakesAt = now;
+            }
+            List<SimulationEngine.LakeSummary> lakeList = cachedLakes;
             for (WebSocketSession session : sessions.values()) {
                 if (!session.isOpen()) {
                     continue;
@@ -137,13 +154,22 @@ public class SimulationWebSocketHandler extends TextWebSocketHandler {
                 envelope.put("boats", snapshot.boats());
                 envelope.put("projectiles", snapshot.projectiles());
                 envelope.put("buoys", snapshot.buoys());
-                envelope.put("islands", snapshot.islands());
+                // Islands are static and can be large on big lakes: send them once
+                // per lake, then let the client keep the last set it received.
+                String islandsSentFor = (String) session.getAttributes().get("islandsLakeSent");
+                if (!lakeId.equals(islandsSentFor)) {
+                    envelope.put("islands", snapshot.islands());
+                    session.getAttributes().put("islandsLakeSent", lakeId);
+                }
                 envelope.put("yourBoatId", boatId);
+                envelope.put("worldWidth", snapshot.worldWidth());
+                envelope.put("worldHeight", snapshot.worldHeight());
                 envelope.put("lakeId", snapshot.lakeId());
                 envelope.put("lakeName", snapshot.lakeName());
                 envelope.put("lakeBoats", snapshot.lakeBoats());
                 envelope.put("lakeCapacity", snapshot.lakeCapacity());
                 envelope.put("lakeTotal", snapshot.lakeTotal());
+                envelope.put("lakes", lakeList);
                 session.sendMessage(new TextMessage(objectMapper.writeValueAsString(envelope)));
             }
         } catch (IOException ex) {
@@ -151,6 +177,8 @@ public class SimulationWebSocketHandler extends TextWebSocketHandler {
         }
     }
 
-    private record ControlPayload(String type, double rudder, double sailTrim, boolean anchored, String side, double power) {
+    private record ControlPayload(String type, double rudder, double sailTrim, boolean anchored, String side,
+                                  double power, String lakeId, String size, boolean bots, Double windDirection,
+                                  String name) {
     }
 }

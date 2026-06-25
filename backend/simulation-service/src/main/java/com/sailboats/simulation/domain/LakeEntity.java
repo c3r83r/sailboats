@@ -2,6 +2,8 @@ package com.sailboats.simulation.domain;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import java.time.OffsetDateTime;
@@ -32,6 +34,16 @@ public class LakeEntity {
 
     @Column(nullable = false)
     private int capacity;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 10)
+    private LakeSize size;
+
+    @Column(name = "bots_enabled", nullable = false)
+    private boolean botsEnabled;
+
+    @Column(name = "wind_direction", nullable = false)
+    private double windDirection;
 
     @Column(nullable = false)
     private boolean active;

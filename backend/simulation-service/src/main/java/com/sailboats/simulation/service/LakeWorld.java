@@ -30,7 +30,9 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public class LakeWorld {
 
-    private static final double WORLD_SIZE = 20.0;
+    private final double worldWidth;
+    private final double worldHeight;
+    private final boolean botsEnabled;
     private static final double DELTA_SECONDS = 0.05;
     private static final double COLLISION_DISTANCE = 1.2;
     private static final double BASE_DRIFT = 0.05;
@@ -49,6 +51,21 @@ public class LakeWorld {
     private static final double FALL_OFF_SPEED_REF = 0.45;
 
     private static final double ANCHOR_TURN_RATE = 60.0;
+
+    // Dynamic wind: a global gust factor that breathes over time with occasional
+    // squalls, and a venturi ("nozzle") boost where the wind funnels through the
+    // gap between two nearby islands.
+    private static final double GUST_MIN = 0.65;
+    private static final double GUST_MAX = 1.7;
+    // Venturi (nozzle): boost between two close islands whose connecting line is
+    // within 45 deg of perpendicular to the wind.
+    private static final double VENTURI_RANGE = 6.0;
+    private static final double VENTURI_MAX = 0.6;
+    private static final double PERP_COS_45 = 0.70710678;
+    // Lee shadow: wind slows downwind of an island; wind is blocked over islands.
+    private static final double SHADOW_LENGTH = 9.0;
+    private static final double SHADOW_STRENGTH = 0.6;
+    private static final double WIND_BLOCK_FACTOR = 0.12;
 
     private static final double BOAT_HIT_RADIUS = 0.7;
     private static final double COLLISION_DAMAGE_SCALE = 22.0;
@@ -122,13 +139,20 @@ public class LakeWorld {
     private final AtomicLong buoySeq = new AtomicLong();
     private long lastBuoySpawnAt;
 
-    private final double windDirection = 90.0;
+    private final double windDirection;
     private final double windStrength = 5.0;
+    // Current global gust multiplier, refreshed once per tick.
+    private double currentGust = 1.0;
 
-    public LakeWorld(String lakeId, String lakeName, int capacity, long seed) {
+    public LakeWorld(String lakeId, String lakeName, int capacity, long seed,
+                     double worldWidth, double worldHeight, double windDirection, boolean botsEnabled) {
         this.lakeId = lakeId;
         this.lakeName = lakeName;
         this.capacity = capacity;
+        this.worldWidth = worldWidth;
+        this.worldHeight = worldHeight;
+        this.windDirection = windDirection;
+        this.botsEnabled = botsEnabled;
         this.islands = generateIslands(new Random(seed));
         this.islandDtos = this.islands.stream().map(i -> i.dto).toList();
         // Spawn the first buoy on the first tick, then one every BUOY_SPAWN_MS.
@@ -141,6 +165,14 @@ public class LakeWorld {
 
     public int getCapacity() {
         return capacity;
+    }
+
+    public double getWorldWidth() {
+        return worldWidth;
+    }
+
+    public double getWorldHeight() {
+        return worldHeight;
     }
 
     public int boatCount() {
@@ -252,6 +284,7 @@ public class LakeWorld {
     /** Advance the world one tick and return a snapshot (without lakeTotal, set by the manager). */
     public SimulationSnapshotDto tick(long now) {
         maintainBots(now);
+        currentGust = gustFactor(now);
         for (BoatState boat : boats.values()) {
             if (boat.isSunk()) {
                 boat.setSpeed(0);
@@ -277,7 +310,8 @@ public class LakeWorld {
                 continue;
             }
 
-            double windUnits = windStrength / KNOTS_PER_UNIT;
+            double windUnits = windStrength * currentGust
+                * windFieldFactor(boat.getX(), boat.getY()) / KNOTS_PER_UNIT;
             double windFrom = windDirection + 180.0;
             double beta = Math.abs(signedDelta(windFrom, boat.getHeading()));
 
@@ -323,15 +357,15 @@ public class LakeWorld {
             if (nextX < 0) {
                 nextX = 0;
                 nextSpeed *= 0.4;
-            } else if (nextX > WORLD_SIZE) {
-                nextX = WORLD_SIZE;
+            } else if (nextX > worldWidth) {
+                nextX = worldWidth;
                 nextSpeed *= 0.4;
             }
             if (nextY < 0) {
                 nextY = 0;
                 nextSpeed *= 0.4;
-            } else if (nextY > WORLD_SIZE) {
-                nextY = WORLD_SIZE;
+            } else if (nextY > worldHeight) {
+                nextY = worldHeight;
                 nextSpeed *= 0.4;
             }
 
@@ -434,7 +468,7 @@ public class LakeWorld {
             p.x += p.vx * DELTA_SECONDS;
             p.y += p.vy * DELTA_SECONDS;
             p.ttl -= DELTA_SECONDS;
-            if (p.ttl <= 0 || p.x < 0 || p.x > WORLD_SIZE || p.y < 0 || p.y > WORLD_SIZE) {
+            if (p.ttl <= 0 || p.x < 0 || p.x > worldWidth || p.y < 0 || p.y > worldHeight) {
                 continue;
             }
             if (isInIsland(p.x, p.y)) {
@@ -488,7 +522,7 @@ public class LakeWorld {
         return SimulationSnapshotDto.builder()
             .serverTime(now)
             .windDirection(windDirection)
-            .windStrength(windStrength)
+            .windStrength(windStrength * currentGust)
             .boats(boats.values().stream().map(boat -> BoatStateDto.builder()
                 .boatId(boat.getBoatId())
                 .name(boat.getName())
@@ -515,6 +549,8 @@ public class LakeWorld {
             .islands(islandDtos)
             .lakeId(lakeId)
             .lakeName(lakeName)
+            .worldWidth(worldWidth)
+            .worldHeight(worldHeight)
             .lakeBoats(humanCount())
             .lakeCapacity(capacity)
             .build();
@@ -531,7 +567,7 @@ public class LakeWorld {
     private void maintainBots(long now) {
         int humans = humanCount();
         int bots = boats.size() - humans;
-        if (humans == 0) {
+        if (!botsEnabled || humans == 0) {
             if (bots > 0) {
                 removeAllBots();
             }
@@ -720,13 +756,13 @@ public class LakeWorld {
         // Edge repulsion: bear back inside before reaching the boundary.
         if (x < BOT_EDGE_MARGIN) {
             vx += (BOT_EDGE_MARGIN - x) / BOT_EDGE_MARGIN;
-        } else if (x > WORLD_SIZE - BOT_EDGE_MARGIN) {
-            vx -= (x - (WORLD_SIZE - BOT_EDGE_MARGIN)) / BOT_EDGE_MARGIN;
+        } else if (x > worldWidth - BOT_EDGE_MARGIN) {
+            vx -= (x - (worldWidth - BOT_EDGE_MARGIN)) / BOT_EDGE_MARGIN;
         }
         if (y < BOT_EDGE_MARGIN) {
             vy += (BOT_EDGE_MARGIN - y) / BOT_EDGE_MARGIN;
-        } else if (y > WORLD_SIZE - BOT_EDGE_MARGIN) {
-            vy -= (y - (WORLD_SIZE - BOT_EDGE_MARGIN)) / BOT_EDGE_MARGIN;
+        } else if (y > worldHeight - BOT_EDGE_MARGIN) {
+            vy -= (y - (worldHeight - BOT_EDGE_MARGIN)) / BOT_EDGE_MARGIN;
         }
 
         // Island repulsion: bear away from landmasses that lie ahead within reach.
@@ -786,20 +822,125 @@ public class LakeWorld {
         double tackSide;
     }
 
+    // ---- Dynamic wind ------------------------------------------------------
+
+    // A global gust factor that breathes over time, with occasional squalls.
+    private double gustFactor(long now) {
+        double t = now / 1000.0;
+        double base = 1.0
+            + 0.16 * Math.sin(t * 0.37)
+            + 0.11 * Math.sin(t * 0.83 + 1.7)
+            + 0.07 * Math.sin(t * 1.9 + 0.5);
+        // Squall: a slow wave that, near its peak, adds a sharp stronger gust.
+        double squall = Math.sin(t * 0.11 + 2.0);
+        if (squall > 0.72) {
+            base += (squall - 0.72) / 0.28 * 0.5;
+        }
+        return Math.max(GUST_MIN, Math.min(GUST_MAX, base));
+    }
+
+    // Local wind multiplier: blocked over islands, slowed in their lee shadow,
+    // and funnelled (venturi) through a gap between two close islands whose
+    // connecting line is within 45 deg of perpendicular to the wind.
+    private double windFieldFactor(double x, double y) {
+        double windRad = Math.toRadians(windDirection);
+        double wx = Math.cos(windRad);
+        double wy = Math.sin(windRad);
+        double factor = 1.0;
+
+        Island nearA = null;
+        Island nearB = null;
+        double bestE = Double.MAX_VALUE;
+        double secondE = Double.MAX_VALUE;
+        double toAx = 0;
+        double toAy = 0;
+        double toBx = 0;
+        double toBy = 0;
+
+        for (Island island : islands) {
+            double dx = x - island.cx;
+            double dy = y - island.cy;
+            double centre = Math.hypot(dx, dy);
+            double edge = centre - island.maxRadius;
+
+            // Over the island silhouette (not the circumscribing circle): wind blocked.
+            if (edge < 0 && island.contains(x, y)) {
+                factor = Math.min(factor, WIND_BLOCK_FACTOR);
+            }
+
+            // Lee shadow: downwind of the island, within its cross-wind width.
+            if (edge >= 0 && edge < SHADOW_LENGTH) {
+                double along = dx * wx + dy * wy; // >0 = downwind of the centre
+                double across = Math.abs(-dx * wy + dy * wx);
+                double halfWidth = island.maxRadius * 1.1;
+                if (along > 0 && across < halfWidth) {
+                    double a = 1.0 - Math.min(1.0, along / (SHADOW_LENGTH + island.maxRadius));
+                    double c = 1.0 - Math.min(1.0, across / halfWidth);
+                    factor *= 1.0 - SHADOW_STRENGTH * a * c;
+                }
+            }
+
+            // Track the two nearest islands for the venturi test.
+            if (edge < VENTURI_RANGE) {
+                double ux = centre > 1e-6 ? dx / centre : 0;
+                double uy = centre > 1e-6 ? dy / centre : 0;
+                if (edge < bestE) {
+                    secondE = bestE;
+                    nearB = nearA;
+                    toBx = toAx;
+                    toBy = toAy;
+                    bestE = edge;
+                    nearA = island;
+                    toAx = ux;
+                    toAy = uy;
+                } else if (edge < secondE) {
+                    secondE = edge;
+                    nearB = island;
+                    toBx = ux;
+                    toBy = uy;
+                }
+            }
+        }
+
+        if (nearA != null && nearB != null && secondE < VENTURI_RANGE) {
+            double between = -(toAx * toBx + toAy * toBy); // 1 => boat between them
+            if (between > 0) {
+                double lx = nearB.cx - nearA.cx;
+                double ly = nearB.cy - nearA.cy;
+                double ll = Math.hypot(lx, ly);
+                if (ll > 1e-6) {
+                    double align = Math.abs((lx / ll) * wx + (ly / ll) * wy); // 0=perp, 1=parallel
+                    if (align <= PERP_COS_45) {
+                        double perp = 1.0 - align / PERP_COS_45; // 1 at perfect perpendicular
+                        double closeness = Math.max(0, Math.min(1, 1.0 - (bestE + secondE) / (2 * VENTURI_RANGE)));
+                        factor *= 1.0 + VENTURI_MAX * perp * closeness * between;
+                    }
+                }
+            }
+        }
+
+        return Math.max(0.05, Math.min(1.7, factor));
+    }
+
     // ---- Islands ----------------------------------------------------------
 
     private List<Island> generateIslands(Random rng) {
-        double target = ISLAND_AREA_FRACTION * WORLD_SIZE * WORLD_SIZE;
+        // Fewer, sparser islands on bigger lakes: the count grows with the linear
+        // size (not the area), so a huge lake is open water dotted with islands.
+        double linearRatio = worldWidth / 28.0;
+        int maxCount = Math.max(1, (int) Math.round(ISLAND_MAX_COUNT * linearRatio));
+        int maxAttempts = Math.max(4000, maxCount * 300);
+        double target = ISLAND_AREA_FRACTION * worldWidth * worldHeight;
         List<Island> result = new ArrayList<>();
         double accumulated = 0;
         int attempts = 0;
         int seq = 0;
-        while (accumulated < target && result.size() < ISLAND_MAX_COUNT && attempts < 4000) {
+        while (accumulated < target && result.size() < maxCount && attempts < maxAttempts) {
             attempts++;
             double baseR = 1.3 + rng.nextDouble() * 1.8;
             double margin = baseR * 1.1 + 0.7;
-            double cx = margin + rng.nextDouble() * (WORLD_SIZE - 2 * margin);
-            double cy = margin + rng.nextDouble() * (WORLD_SIZE - 2 * margin);
+            double cx = margin + rng.nextDouble() * (worldWidth - 2 * margin);
+            double cy = margin + rng.nextDouble() * (worldHeight - 2 * margin);
             Island island = buildIsland("island-" + (++seq), cx, cy, baseR, rng);
 
             boolean overlaps = false;
@@ -858,13 +999,13 @@ public class LakeWorld {
     private double[] randomFreePosition() {
         ThreadLocalRandom r = ThreadLocalRandom.current();
         for (int i = 0; i < 200; i++) {
-            double x = 2 + r.nextDouble() * (WORLD_SIZE - 4);
-            double y = 2 + r.nextDouble() * (WORLD_SIZE - 4);
+            double x = 2 + r.nextDouble() * (worldWidth - 4);
+            double y = 2 + r.nextDouble() * (worldHeight - 4);
             if (!blockedForSpawn(x, y, 1.0)) {
                 return new double[] {x, y};
             }
         }
-        return new double[] {WORLD_SIZE / 2, WORLD_SIZE / 2};
+        return new double[] {worldWidth / 2, worldHeight / 2};
     }
 
     private void resolveIslandCollisions(long now) {

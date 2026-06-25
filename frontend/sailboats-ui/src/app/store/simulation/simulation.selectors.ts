@@ -15,10 +15,16 @@ export const selectWind = createSelector(selectSimulationState, (state) => ({
   strength: state.windStrength,
 }));
 export const selectControls = createSelector(selectSimulationState, (state) => state.controls);
+export const selectLakes = createSelector(selectSimulationState, (state) => state.lakes);
+export const selectWorld = createSelector(selectSimulationState, (state) => ({
+  width: state.worldWidth,
+  height: state.worldHeight,
+}));
 export const selectLake = createSelector(selectSimulationState, (state) => ({
   id: state.lakeId,
   name: state.lakeName,
   boats: state.lakeBoats,
   capacity: state.lakeCapacity,
   total: state.lakeTotal,
+  size: state.lakes.find((lake) => lake.id === state.lakeId)?.size ?? 'SMALL',
 }));

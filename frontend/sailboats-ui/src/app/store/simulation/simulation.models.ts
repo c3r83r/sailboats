@@ -17,6 +17,17 @@ export interface BoatState {
 
 export type FireSide = 'bow' | 'stern' | 'port' | 'starboard';
 
+export type LakeSize = 'SMALL' | 'MEDIUM' | 'LARGE';
+
+export interface LakeSummary {
+  id: string;
+  name: string;
+  size: LakeSize;
+  boats: number;
+  capacity: number;
+  bots: boolean;
+}
+
 export interface Projectile {
   id: string;
   ownerId: string;
@@ -65,11 +76,14 @@ export interface SimulationSnapshot {
   buoys?: Buoy[];
   islands?: Island[];
   yourBoatId?: string;
+  worldWidth?: number;
+  worldHeight?: number;
   lakeId?: string;
   lakeName?: string;
   lakeBoats?: number;
   lakeCapacity?: number;
   lakeTotal?: number;
+  lakes?: LakeSummary[];
 }
 
 export interface SimulationState {
@@ -82,9 +96,12 @@ export interface SimulationState {
   playerBoatId: string | null;
   windDirection: number;
   windStrength: number;
+  worldWidth: number;
+  worldHeight: number;
   lakeId: string | null;
   lakeName: string | null;
   lakeBoats: number;
   lakeCapacity: number;
   lakeTotal: number;
+  lakes: LakeSummary[];
 }
