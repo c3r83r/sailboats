@@ -9,6 +9,8 @@ import {
 import * as THREE from 'three';
 import { BoatState, Buoy, HelmControlState, Island, Projectile } from '../../../../store/simulation/simulation.models';
 
+type SailVisualState = 'down' | 'luff' | 'trim' | 'stall' | 'back';
+
 /**
  * WebGL (Three.js) "3D" view of the same server-authoritative simulation that
  * the flat {@code WaterCanvasComponent} renders in 2D. It consumes the identical
@@ -54,6 +56,9 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
   @Input() islands: Island[] = [];
   @Input() playerBoatId: string | null = null;
   @Input() controls: HelmControlState | null = null;
+  @Input() mainState: SailVisualState = 'down';
+  @Input() jibState: SailVisualState = 'down';
+  @Input() heel = 0;
   @Input() worldWidth = 28;
   @Input() worldHeight = 15.75;
   @Input() windDirection = 90;
@@ -298,23 +303,151 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     mast.position.set(0.25, 1.15, 0);
     rig.add(mast);
 
-    // Mainsail: a plane aft of the mast.
+    // Boom: a spar along the foot of the mainsail, re-aimed every frame.
+    const boomGeo = new THREE.CylinderGeometry(0.035, 0.035, 1, 6);
+    boomGeo.rotateZ(Math.PI / 2); // lie along local X so we can re-aim it
+    this.sharedGeo.push(boomGeo);
+    const boom = new THREE.Mesh(boomGeo, mastMat);
+    boom.name = 'boom';
+    rig.add(boom);
+
+    // Sail material (shared): soft canvas white, lit on both faces.
     const sailMat = new THREE.MeshStandardMaterial({
       color: new THREE.Color('#f4f8ff'),
-      roughness: 0.85,
+      roughness: 0.9,
       side: THREE.DoubleSide,
     });
-    const sailGeo = new THREE.PlaneGeometry(1.2, 1.7);
-    this.sharedGeo.push(sailGeo);
     this.sharedMat.push(sailMat);
-    const sail = new THREE.Mesh(sailGeo, sailMat);
-    sail.name = 'sail';
-    sail.position.set(-0.35, 1.15, 0);
-    sail.rotation.y = Math.PI / 2;
-    rig.add(sail);
+
+    // Mainsail (grot) and jib (fok): segmented planes whose vertices are placed
+    // in rig-local space every frame so they belly under wind or flap when luffing.
+    const main = this.makeSailMesh(sailMat, 6, 9);
+    main.name = 'main';
+    rig.add(main);
+
+    const jib = this.makeSailMesh(sailMat, 5, 8);
+    jib.name = 'jib';
+    rig.add(jib);
+
+    // Forestay wire from the bow up to the masthead (the jib's luff rides this).
+    const stayMat = new THREE.LineBasicMaterial({ color: 0x1a140a, transparent: true, opacity: 0.5 });
+    this.sharedMat.push(stayMat);
+    const stayGeo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(1.15, 0.2, 0),
+      new THREE.Vector3(0.25, 2.15, 0),
+    ]);
+    this.sharedGeo.push(stayGeo);
+    const stay = new THREE.Line(stayGeo, stayMat);
+    rig.add(stay);
+
+    // Anchor rig (toggled when the boat is anchored): a rode from the bow down to
+    // a small anchor resting just under the surface ahead of the boat. Lives on
+    // the hull group (not the rig) so it does not heel.
+    const anchor = this.makeAnchor();
+    anchor.name = 'anchor';
+    anchor.visible = false;
+    group.add(anchor);
 
     this.scene?.add(group);
     return group;
+  }
+
+  // A flat segmented plane we later reshape into a bellied/luffing sail. The
+  // normalised (u, v) of each vertex is cached so we can rebuild it every frame.
+  private makeSailMesh(mat: THREE.Material, nu: number, nv: number): THREE.Mesh {
+    const geo = new THREE.PlaneGeometry(1, 1, nu, nv);
+    this.sharedGeo.push(geo);
+    const pos = geo.attributes['position'] as THREE.BufferAttribute;
+    const uv = new Float32Array((pos.count) * 2);
+    for (let i = 0; i < pos.count; i++) {
+      uv[i * 2] = pos.getX(i) + 0.5; // u: 0 at luff, 1 at leech
+      uv[i * 2 + 1] = pos.getY(i) + 0.5; // v: 0 at foot, 1 at head
+    }
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.userData['uv'] = uv;
+    return mesh;
+  }
+
+  // Reshape a sail: place every vertex in rig-local space from the sail's three
+  // corners, add a leeward belly (camber) and, when luffing, a flapping ripple.
+  private updateSail(
+    mesh: THREE.Mesh,
+    tack: THREE.Vector3,
+    head: THREE.Vector3,
+    clew: THREE.Vector3,
+    leewardSign: number,
+    belly: number,
+    flutter: number,
+    phase: number,
+  ): void {
+    const geo = mesh.geometry as THREE.BufferGeometry;
+    const pos = geo.attributes['position'] as THREE.BufferAttribute;
+    const uv = mesh.userData['uv'] as Float32Array;
+    const Lv = new THREE.Vector3();
+    const Tv = new THREE.Vector3();
+    const p = new THREE.Vector3();
+    for (let i = 0; i < pos.count; i++) {
+      const u = uv[i * 2];
+      const v = uv[i * 2 + 1];
+      // Luff edge (tack->head at the mast/stay) and leech edge (clew->head).
+      Lv.copy(tack).lerp(head, v);
+      Tv.copy(clew).lerp(head, v);
+      p.copy(Lv).lerp(Tv, u);
+      // Belly bulges to leeward, fullest low and mid-chord, tapering to the head.
+      const camber = belly * Math.sin(Math.PI * u) * (1 - 0.45 * v);
+      const flap = flutter * Math.sin(u * 6.2 + v * 3.1 + phase * 9) * (0.3 + 0.7 * u);
+      p.z += leewardSign * camber + flap;
+      pos.setXYZ(i, p.x, p.y, p.z);
+    }
+    pos.needsUpdate = true;
+    geo.computeVertexNormals();
+  }
+
+  private makeAnchor(): THREE.Group {
+    const grp = new THREE.Group();
+    const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#3b4048'), roughness: 0.5, metalness: 0.6 });
+    this.sharedMat.push(mat);
+    // Hung at the bow roller just above the waterline so it reads clearly.
+    const anchorPos = new THREE.Vector3(1.5, 0.05, 0);
+
+    // Rode (chain) from the bow fitting down to the anchor stock.
+    const rodeMat = new THREE.LineBasicMaterial({ color: 0x20242a });
+    this.sharedMat.push(rodeMat);
+    const rodeGeo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(1.15, 0.35, 0),
+      new THREE.Vector3(anchorPos.x, anchorPos.y + 0.3, 0),
+    ]);
+    this.sharedGeo.push(rodeGeo);
+    grp.add(new THREE.Line(rodeGeo, rodeMat));
+
+    // Anchor: a shank, a stock across the top and a curved crown with flukes.
+    const shankGeo = new THREE.CylinderGeometry(0.05, 0.05, 0.6, 6);
+    this.sharedGeo.push(shankGeo);
+    const shank = new THREE.Mesh(shankGeo, mat);
+    shank.position.copy(anchorPos);
+    grp.add(shank);
+
+    const ringGeo = new THREE.TorusGeometry(0.09, 0.03, 6, 12);
+    this.sharedGeo.push(ringGeo);
+    const ring = new THREE.Mesh(ringGeo, mat);
+    ring.position.set(anchorPos.x, anchorPos.y + 0.32, 0);
+    ring.rotation.y = Math.PI / 2;
+    grp.add(ring);
+
+    const stockGeo = new THREE.CylinderGeometry(0.035, 0.035, 0.5, 6);
+    stockGeo.rotateX(Math.PI / 2);
+    this.sharedGeo.push(stockGeo);
+    const stock = new THREE.Mesh(stockGeo, mat);
+    stock.position.set(anchorPos.x, anchorPos.y + 0.16, 0);
+    grp.add(stock);
+
+    const crownGeo = new THREE.TorusGeometry(0.22, 0.045, 6, 14, Math.PI);
+    this.sharedGeo.push(crownGeo);
+    const crown = new THREE.Mesh(crownGeo, mat);
+    crown.position.set(anchorPos.x, anchorPos.y - 0.32, 0);
+    grp.add(crown);
+
+    return grp;
   }
 
   private syncBoats(t: number): void {
@@ -340,13 +473,12 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
         // Ease the visible heel toward the target for smoothness.
         const targetRad = (heelDeg * Math.PI) / 180;
         rig.rotation.x = rig.rotation.x + (targetRad - rig.rotation.x) * 0.2;
-        const sail = rig.getObjectByName('sail') as THREE.Mesh | undefined;
-        if (sail) {
-          const trim = boat.sailTrim ?? 0;
-          sail.visible = !capsized && trim > 0.05;
-          // Boom swings out with an eased sheet.
-          sail.rotation.x = (1 - trim) * 0.5;
-        }
+        this.updateRig(boat, rig, heelDeg, capsized, t);
+      }
+
+      const anchor = g.getObjectByName('anchor');
+      if (anchor) {
+        anchor.visible = !!boat.anchored && !boat.capsized && !boat.sunk;
       }
 
       // Whole hull also tips slightly with the rig for a unified lean.
@@ -371,6 +503,101 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
         this.boatMeshes.delete(id);
       }
     }
+  }
+
+  // Reshape both sails, aim the boom, and toggle rig visibility for one boat.
+  private updateRig(boat: BoatState, rig: THREE.Group, heelDeg: number, capsized: boolean, t: number): void {
+    const player = boat.boatId === this.playerBoatId;
+    const c: HelmControlState | null = player ? this.controls : null;
+
+    // Deploy / sheet: the player has a detailed helm; other boats only report a
+    // single sailTrim, so we derive plausible values from it.
+    const trim = boat.sailTrim ?? 0;
+    const mainDeploy = c ? this.clamp01(c.main.deploy) : trim > 0.04 ? this.clamp01(0.45 + trim) : 0;
+    const mainSheet = c ? this.clamp01(c.main.sheet) : trim;
+    const jibDeploy = c ? this.clamp01(c.jib.deploy) : trim > 0.04 ? this.clamp01(0.35 + trim) : 0;
+    const jibSheet = c ? this.clamp01(c.jib.sheet) : trim;
+
+    // Luffing: the player exposes explicit sail state; for others a sail that is
+    // hoisted while the boat sits bolt upright is effectively head-to-wind.
+    const mainLuff = player ? this.mainState === 'luff' || this.mainState === 'down' : Math.abs(heelDeg) < 3 && mainDeploy > 0;
+    const jibLuff = player ? this.jibState === 'luff' || this.jibState === 'down' : Math.abs(heelDeg) < 3 && jibDeploy > 0;
+
+    const lee = heelDeg >= 0 ? 1 : -1;
+    const gust = this.clamp(this.windStrength / 5, 0.6, 1.6);
+
+    const main = rig.getObjectByName('main') as THREE.Mesh | undefined;
+    const boom = rig.getObjectByName('boom') as THREE.Mesh | undefined;
+    const jib = rig.getObjectByName('jib') as THREE.Mesh | undefined;
+
+    // ---- Mainsail (grot) ----
+    if (main) {
+      const show = !capsized && mainDeploy > 0.05;
+      main.visible = show;
+      if (boom) {
+        boom.visible = show;
+      }
+      if (show) {
+        const boomY = 0.4;
+        const headY = 0.4 + 1.75 * (0.55 + 0.45 * mainDeploy); // hoist raises the head
+        const foot = 1.45;
+        const boomAngle = 0.12 + (1 - mainSheet) * 0.95;
+        const tack = new THREE.Vector3(0.25, boomY, 0);
+        const head = new THREE.Vector3(0.25, headY, 0);
+        const clew = new THREE.Vector3(
+          0.25 - Math.cos(boomAngle) * foot,
+          boomY,
+          lee * Math.sin(boomAngle) * foot,
+        );
+        const power = mainDeploy * (0.35 + 0.65 * mainSheet);
+        const belly = mainLuff ? 0.05 : 0.34 * power;
+        const flutter = mainLuff ? 0.14 * gust : 0.02;
+        this.updateSail(main, tack, head, clew, lee, belly, flutter, t);
+        if (boom) {
+          this.alignSpar(boom, tack, clew);
+        }
+      }
+    }
+
+    // ---- Jib (fok) ----
+    if (jib) {
+      const show = !capsized && jibDeploy > 0.04;
+      jib.visible = show;
+      if (show) {
+        const tack = new THREE.Vector3(1.15, 0.2, 0);
+        const head = new THREE.Vector3(0.32, 0.2 + 1.75 * (0.5 + 0.5 * jibDeploy), 0);
+        const jibFoot = 1.0;
+        const jibAngle = 0.2 + (1 - jibSheet) * 0.95;
+        const clew = new THREE.Vector3(
+          1.15 - Math.cos(jibAngle) * jibFoot,
+          0.55,
+          lee * Math.sin(jibAngle) * jibFoot,
+        );
+        const power = jibDeploy * (0.35 + 0.65 * jibSheet);
+        const belly = jibLuff ? 0.05 : 0.3 * power;
+        const flutter = jibLuff ? 0.16 * gust : 0.025;
+        this.updateSail(jib, tack, head, clew, lee, belly, flutter, t + 1.7);
+      }
+    }
+  }
+
+  // Aim a unit-length spar (modelled along +X) so it spans from a to b.
+  private alignSpar(mesh: THREE.Mesh, a: THREE.Vector3, b: THREE.Vector3): void {
+    const dir = b.clone().sub(a);
+    const len = dir.length();
+    mesh.position.copy(a).add(b).multiplyScalar(0.5);
+    mesh.scale.set(len, 1, 1);
+    if (len > 1e-4) {
+      mesh.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), dir.normalize());
+    }
+  }
+
+  private clamp(v: number, lo: number, hi: number): number {
+    return v < lo ? lo : v > hi ? hi : v;
+  }
+
+  private clamp01(v: number): number {
+    return v < 0 ? 0 : v > 1 ? 1 : v;
   }
 
   private update(): void {

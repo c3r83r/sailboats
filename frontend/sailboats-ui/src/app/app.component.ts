@@ -217,7 +217,10 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
             [windStrength]="windStrength"
             [fill]="fullscreen"
             [controls]="controls"
-            [playerBoatId]="playerBoatId">
+            [playerBoatId]="playerBoatId"
+            [mainState]="mainState"
+            [jibState]="jibState"
+            [heel]="heel">
           </app-scene-3d>
           <button
             type="button"
