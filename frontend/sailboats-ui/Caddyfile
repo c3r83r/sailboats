@@ -32,6 +32,11 @@
 		reverse_proxy telemetry-service:8082
 	}
 
+	# Simulation public stats REST API.
+	handle /api/simulation/* {
+		reverse_proxy simulation-service:8083
+	}
+
 	# Angular single-page app: serve static assets, fall back to index.html.
 	handle {
 		root * /srv

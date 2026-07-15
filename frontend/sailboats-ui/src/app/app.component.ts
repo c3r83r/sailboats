@@ -131,6 +131,10 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
             <span class="stat-value">{{ stats.activeUsers }}</span>
             <span class="stat-label">aktywnych / {{ stats.activeWindowHours }}h</span>
           </div>
+          <div class="stat-pill live">
+            <span class="stat-value">{{ stats.onlineUsers }}</span>
+            <span class="stat-label">online teraz</span>
+          </div>
         </div>
         <div class="lake" *ngIf="lake$ | async as lake">
           <span class="lake-name">{{ lake.name ?? 'Akwen' }}</span>
@@ -307,6 +311,11 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
     .stat-pill.accent {
       background: linear-gradient(135deg, rgba(16, 102, 140, 0.85), rgba(8, 47, 74, 0.92));
       border-color: rgba(143, 227, 255, 0.2);
+    }
+
+    .stat-pill.live {
+      background: linear-gradient(135deg, rgba(30, 138, 86, 0.88), rgba(9, 50, 33, 0.94));
+      border-color: rgba(163, 244, 194, 0.22);
     }
 
     .stat-value {
@@ -1409,6 +1418,8 @@ export class AppComponent implements OnInit, OnDestroy {
     this.awayDisconnected = true;
     this.ws.disconnect();
     this.store.dispatch(SimulationActions.disconnected());
+    // Give the server a moment to drop the session, then reflect the drop in the counter.
+    setTimeout(() => this.publicStats.refresh(), 500);
   }
 
   private rejoinAfterIdle(): void {
@@ -1431,6 +1442,8 @@ export class AppComponent implements OnInit, OnDestroy {
     this.store.dispatch(SimulationActions.connect({ token }));
     // Always start fresh: sails down + anchor (resets the boat on login/rejoin).
     this.resetControls();
+    // Give the WS handshake a moment to register, then reflect the join in the counter.
+    setTimeout(() => this.publicStats.refresh(), 500);
   }
 
   private authErrorMessage(status: number | undefined): string {
