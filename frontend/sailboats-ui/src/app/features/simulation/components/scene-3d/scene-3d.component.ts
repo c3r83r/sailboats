@@ -329,16 +329,52 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     jib.name = 'jib';
     rig.add(jib);
 
-    // Forestay wire from the bow up to the masthead (the jib's luff rides this).
-    const stayMat = new THREE.LineBasicMaterial({ color: 0x1a140a, transparent: true, opacity: 0.5 });
-    this.sharedMat.push(stayMat);
-    const stayGeo = new THREE.BufferGeometry().setFromPoints([
-      new THREE.Vector3(1.15, 0.2, 0),
-      new THREE.Vector3(0.25, 2.15, 0),
-    ]);
-    this.sharedGeo.push(stayGeo);
-    const stay = new THREE.Line(stayGeo, stayMat);
-    rig.add(stay);
+    // Standing rigging (olinowanie stałe): forestay, backstay, cap shrouds and
+    // spreaders. Fixed wires that hold the mast up; they heel with the boat.
+    const mastHead = new THREE.Vector3(0.25, 2.25, 0);
+    const hounds = new THREE.Vector3(0.25, 1.7, 0);
+    const bowTack = new THREE.Vector3(1.15, 0.2, 0);
+    const stern = new THREE.Vector3(-0.95, 0.36, 0);
+    const chainPort = new THREE.Vector3(0.12, 0.34, 0.44);
+    const chainStbd = new THREE.Vector3(0.12, 0.34, -0.44);
+    const spreadPort = new THREE.Vector3(0.25, 1.68, 0.28);
+    const spreadStbd = new THREE.Vector3(0.25, 1.68, -0.28);
+
+    const wireMat = new THREE.LineBasicMaterial({ color: 0x1a140a, transparent: true, opacity: 0.5 });
+    this.sharedMat.push(wireMat);
+    const addWire = (a: THREE.Vector3, b: THREE.Vector3) => {
+      const geo = new THREE.BufferGeometry().setFromPoints([a, b]);
+      this.sharedGeo.push(geo);
+      rig.add(new THREE.Line(geo, wireMat));
+    };
+    addWire(bowTack, mastHead); // forestay (jib luff rides this)
+    addWire(mastHead, stern); // backstay
+    addWire(mastHead, spreadPort); // cap shroud upper
+    addWire(spreadPort, chainPort); // cap shroud lower
+    addWire(mastHead, spreadStbd);
+    addWire(spreadStbd, chainStbd);
+
+    // Spreaders (saling): short struts pushing the shrouds outboard.
+    const spreadMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#3a2a12'), roughness: 0.8 });
+    this.sharedMat.push(spreadMat);
+    const spreadGeo = new THREE.CylinderGeometry(0.02, 0.02, 0.56, 5);
+    spreadGeo.rotateX(Math.PI / 2); // lie across the beam (local Z)
+    this.sharedGeo.push(spreadGeo);
+    const spreaders = new THREE.Mesh(spreadGeo, spreadMat);
+    spreaders.position.set(0.25, 1.68, 0);
+    rig.add(spreaders);
+
+    // Roller-furling foil + furled cloth on the forestay: a cylinder along the
+    // stay whose radius grows as the jib rolls away (thin foil when fully unfurled).
+    const furlDir = mastHead.clone().sub(bowTack);
+    const furlLen = furlDir.length();
+    const furlGeo = new THREE.CylinderGeometry(1, 1, furlLen, 8);
+    this.sharedGeo.push(furlGeo);
+    const furl = new THREE.Mesh(furlGeo, sailMat);
+    furl.name = 'jibFurl';
+    furl.position.copy(bowTack).add(mastHead).multiplyScalar(0.5);
+    furl.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), furlDir.normalize());
+    rig.add(furl);
 
     // Anchor rig (toggled when the boat is anchored): a rode from the bow down to
     // a small anchor resting just under the surface ahead of the boat. Lives on
@@ -464,15 +500,21 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       // Float the boat on the wave surface at its position.
       const wy = this.waveHeight(boat.x, boat.y, t);
       g.position.set(boat.x, wy, boat.y);
-      g.rotation.y = -(boat.heading * Math.PI) / 180;
+
+      // Heel the WHOLE boat (hull + rig) around its forward axis: yaw to the
+      // heading, then roll to the heel angle. Eased for smoothness.
+      const capsized = !!boat.capsized;
+      const heelDeg = capsized ? 82 * Math.sign(boat.heel || 1) : boat.heel ?? 0;
+      const targetRoll = (heelDeg * Math.PI) / 180;
+      const curRoll = (g.userData['heelRad'] as number) ?? 0;
+      const heelRad = curRoll + (targetRoll - curRoll) * 0.15;
+      g.userData['heelRad'] = heelRad;
+      const yaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -(boat.heading * Math.PI) / 180);
+      const roll = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), heelRad);
+      g.quaternion.copy(yaw).multiply(roll);
 
       const rig = g.getObjectByName('rig') as THREE.Group | undefined;
       if (rig) {
-        const capsized = !!boat.capsized;
-        const heelDeg = boat.capsized ? 82 * Math.sign(boat.heel || 1) : boat.heel ?? 0;
-        // Ease the visible heel toward the target for smoothness.
-        const targetRad = (heelDeg * Math.PI) / 180;
-        rig.rotation.x = rig.rotation.x + (targetRad - rig.rotation.x) * 0.2;
         this.updateRig(boat, rig, heelDeg, capsized, t);
       }
 
@@ -480,10 +522,6 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       if (anchor) {
         anchor.visible = !!boat.anchored && !boat.capsized && !boat.sunk;
       }
-
-      // Whole hull also tips slightly with the rig for a unified lean.
-      const capRad = boat.capsized ? (82 * Math.PI) / 180 * Math.sign(boat.heel || 1) : ((boat.heel ?? 0) * Math.PI) / 180 * 0.25;
-      g.rotation.z = g.rotation.z + (capRad - g.rotation.z) * 0.2;
 
       const player = boat.boatId === this.playerBoatId;
       g.traverse((o) => {
@@ -538,9 +576,11 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
         boom.visible = show;
       }
       if (show) {
-        const boomY = 0.4;
-        const headY = 0.4 + 1.75 * (0.55 + 0.45 * mainDeploy); // hoist raises the head
-        const foot = 1.45;
+        // Shorter, higher-cut main: the boom sits well above the deck and the
+        // foot is trimmed so it no longer sweeps low over the stern.
+        const boomY = 0.9;
+        const headY = boomY + 1.35 * (0.6 + 0.4 * mainDeploy); // hoist raises the head
+        const foot = 1.05;
         const boomAngle = 0.12 + (1 - mainSheet) * 0.95;
         const tack = new THREE.Vector3(0.25, boomY, 0);
         const head = new THREE.Vector3(0.25, headY, 0);
@@ -559,24 +599,37 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       }
     }
 
-    // ---- Jib (fok) ----
+    // ---- Jib (fok) on a roller furler ----
+    // The luff is fixed on the forestay (bow -> masthead); furling rolls the
+    // cloth away toward the stay, so the clew collapses toward the luff as the
+    // deploy drops and a fatter "sausage" of rolled sail shows on the foil.
+    const furl = rig.getObjectByName('jibFurl') as THREE.Mesh | undefined;
     if (jib) {
-      const show = !capsized && jibDeploy > 0.04;
+      const rolled = this.clamp01(jibDeploy);
+      const show = !capsized && rolled > 0.02;
       jib.visible = show;
       if (show) {
         const tack = new THREE.Vector3(1.15, 0.2, 0);
-        const head = new THREE.Vector3(0.32, 0.2 + 1.75 * (0.5 + 0.5 * jibDeploy), 0);
+        const head = new THREE.Vector3(0.28, 2.05, 0); // luff runs the full forestay
         const jibFoot = 1.0;
         const jibAngle = 0.2 + (1 - jibSheet) * 0.95;
-        const clew = new THREE.Vector3(
+        const fullClew = new THREE.Vector3(
           1.15 - Math.cos(jibAngle) * jibFoot,
-          0.55,
+          0.5,
           lee * Math.sin(jibAngle) * jibFoot,
         );
-        const power = jibDeploy * (0.35 + 0.65 * jibSheet);
+        // Roller furl: clew rolls in toward the tack/stay as the sail furls.
+        const clew = tack.clone().lerp(fullClew, rolled);
+        const power = rolled * (0.35 + 0.65 * jibSheet);
         const belly = jibLuff ? 0.05 : 0.3 * power;
         const flutter = jibLuff ? 0.16 * gust : 0.025;
         this.updateSail(jib, tack, head, clew, lee, belly, flutter, t + 1.7);
+      }
+      if (furl) {
+        // Thin foil when unfurled, fat roll of cloth when furled away.
+        furl.visible = !capsized;
+        const r = 0.02 + 0.12 * (1 - this.clamp01(jibDeploy));
+        furl.scale.set(r, 1, r);
       }
     }
   }
@@ -624,10 +677,23 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       this.waterGeo.computeVertexNormals();
     }
 
-    // Camera follows the player from behind-and-above for an oblique 3D view.
-    const camTarget = new THREE.Vector3(p.x, 0.8, p.y);
-    const desired = new THREE.Vector3(p.x, 10, p.y + 12);
-    this.camera.position.lerp(desired, 0.08);
+    // Third-person chase camera: sit just astern of the player and above the
+    // deck, turning WITH the boat's heading (like the skipper's own view), so
+    // steering left swings the whole world left. The boat stays centred.
+    const player = this.playerBoatId ? this.boats.find((b) => b.boatId === this.playerBoatId) : undefined;
+    const h = ((player ? player.heading : 90) * Math.PI) / 180;
+    const fwd = new THREE.Vector3(Math.cos(h), 0, Math.sin(h));
+    const wy = this.waveHeight(p.x, p.y, t);
+    // Aim straight at the boat so it stays centred in the frame.
+    const camTarget = new THREE.Vector3(p.x, wy + 1.0, p.y);
+    const camDist = 8.5;
+    const camHeight = 4.8;
+    const desired = new THREE.Vector3(
+      p.x - fwd.x * camDist,
+      wy + camHeight,
+      p.y - fwd.z * camDist,
+    );
+    this.camera.position.lerp(desired, 0.15);
     this.camera.lookAt(camTarget);
 
     this.renderer.render(this.scene, this.camera);
