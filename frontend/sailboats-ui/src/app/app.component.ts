@@ -2,6 +2,7 @@ import { AsyncPipe, CommonModule } from '@angular/common';
 import { Component, DestroyRef, HostListener, OnDestroy, OnInit, inject } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormsModule } from '@angular/forms';
+import { RouterLink } from '@angular/router';
 import { Store } from '@ngrx/store';
 import { combineLatest } from 'rxjs';
 import { ControlPanelComponent } from './features/simulation/components/control-panel/control-panel.component';
@@ -17,9 +18,9 @@ export type SailVisualState = 'down' | 'luff' | 'trim' | 'stall' | 'back';
 export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | 'deeprun' | 'run';
 
 @Component({
-  selector: 'app-root',
+  selector: 'app-game',
   standalone: true,
-  imports: [CommonModule, AsyncPipe, FormsModule, ControlPanelComponent, WaterCanvasComponent],
+  imports: [CommonModule, AsyncPipe, FormsModule, RouterLink, ControlPanelComponent, WaterCanvasComponent],
   template: `
     <main class="layout">
       <div class="welcome" *ngIf="!started">
@@ -122,6 +123,7 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
           <h1>Sailboats</h1>
           <p>Multiplayer real-time sailing simulator</p>
         </div>
+        <a routerLink="/about" class="about-link">O projekcie</a>
         <div class="public-stats" *ngIf="publicStats$ | async as stats">
           <div class="stat-pill">
             <span class="stat-value">{{ stats.registeredUsers }}</span>
@@ -485,6 +487,23 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
 
     .logout-btn:hover {
       filter: brightness(1.15);
+    }
+
+    .about-link {
+      padding: 6px 12px;
+      border-radius: 8px;
+      border: 1px solid rgba(143, 227, 255, 0.25);
+      background: rgba(8, 18, 30, 0.4);
+      color: rgba(216, 244, 255, 0.85);
+      font-size: 0.8rem;
+      font-weight: 700;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+
+    .about-link:hover {
+      color: #eaf6ff;
+      background: rgba(143, 227, 255, 0.16);
     }
 
     .lake-browser {
