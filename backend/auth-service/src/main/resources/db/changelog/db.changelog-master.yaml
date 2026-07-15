@@ -80,3 +80,5 @@ databaseChangeLog:
             referencedTableName: users
             referencedColumnNames: id
             onDelete: CASCADE
+  - include:
+      file: db/changelog/db.changelog-003-add-last-active-at.yaml

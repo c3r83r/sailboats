@@ -3,8 +3,10 @@ package com.sailboats.auth.web;
 import com.sailboats.auth.repo.UserRepository;
 import com.sailboats.auth.security.JwtService;
 import com.sailboats.auth.service.AuthService;
+import com.sailboats.auth.service.AuthStatsService;
 import com.sailboats.auth.web.dto.AuthResponse;
 import com.sailboats.auth.web.dto.LoginRequest;
+import com.sailboats.auth.web.dto.PublicStatsDto;
 import com.sailboats.auth.web.dto.RegisterRequest;
 import com.sailboats.auth.web.dto.UserDto;
 import jakarta.validation.Valid;
@@ -30,17 +32,20 @@ public class AuthController {
     private static final String REFRESH_COOKIE = "refresh_token";
 
     private final AuthService authService;
+    private final AuthStatsService authStatsService;
     private final JwtService jwtService;
     private final UserRepository userRepository;
     private final boolean cookieSecure;
     private final String cookieSameSite;
 
     public AuthController(AuthService authService,
+                          AuthStatsService authStatsService,
                           JwtService jwtService,
                           UserRepository userRepository,
                           @Value("${app.cookie.secure:false}") boolean cookieSecure,
                           @Value("${app.cookie.same-site:Lax}") String cookieSameSite) {
         this.authService = authService;
+        this.authStatsService = authStatsService;
         this.jwtService = jwtService;
         this.userRepository = userRepository;
         this.cookieSecure = cookieSecure;
@@ -93,6 +98,11 @@ public class AuthController {
         return userRepository.findById(UUID.fromString(subject))
             .map(user -> new UserDto(user.getId().toString(), user.getEmail(), user.getDisplayName()))
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Unknown user"));
+    }
+
+    @GetMapping("/public/stats")
+    public PublicStatsDto publicStats() {
+        return authStatsService.publicStats();
     }
 
     private String refreshCookie(String value, long maxAgeSeconds) {

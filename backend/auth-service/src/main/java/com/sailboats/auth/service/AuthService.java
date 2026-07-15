@@ -58,6 +58,7 @@ public class AuthService {
         user.setPasswordHash(passwordEncoder.encode(rawPassword));
         user.setDisplayName(displayName.trim());
         user.setCreatedAt(OffsetDateTime.now());
+        user.setLastActiveAt(user.getCreatedAt());
         userRepository.save(user);
         return issueTokens(user);
     }
@@ -69,6 +70,8 @@ public class AuthService {
         if (!passwordEncoder.matches(rawPassword, user.getPasswordHash())) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid credentials");
         }
+        user.setLastActiveAt(OffsetDateTime.now());
+        userRepository.save(user);
         return issueTokens(user);
     }
 
@@ -87,6 +90,8 @@ public class AuthService {
         refreshTokenRepository.save(stored);
         UserEntity user = userRepository.findById(stored.getUserId())
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Unknown user"));
+        user.setLastActiveAt(OffsetDateTime.now());
+        userRepository.save(user);
         return issueTokens(user);
     }
 
