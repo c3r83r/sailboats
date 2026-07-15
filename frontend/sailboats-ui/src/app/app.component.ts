@@ -894,8 +894,8 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
       margin: 0;
       padding: 11px 14px;
       border-radius: 12px;
-      background: rgba(11, 38, 62, 0.5);
-      border: 1px solid rgba(143, 227, 255, 0.12);
+      background: rgba(11, 38, 62, 0.62);
+      border: 1px solid rgba(143, 227, 255, 0.18);
       backdrop-filter: blur(6px);
       font-size: 0.86rem;
       display: flex;
@@ -904,7 +904,7 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
       align-items: center;
     }
 
-    .kbd-help span { opacity: 0.85; }
+    .kbd-help span { opacity: 0.95; }
 
     .kbd-help b {
       display: inline-block;
