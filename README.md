@@ -45,6 +45,10 @@ Projekt jest przygotowany jako portfolio na rozmowę Fullstack Developer (Java +
 - Trwałość danych z JPA i Liquibase na dwóch silnikach SQL
 - Podstawy fizyki ruchu jednostek (wiatr, ster, żagle, kolizje)
 
+## Roadmapa
+
+Aktualny plan rozwoju znajduje się w [ROADMAP.md](ROADMAP.md).
+
 ## Wdrożenie produkcyjne (VPS + Docker Compose)
 
 Cały stack uruchamia się jedną komendą przez `docker-compose.prod.yml`. Edge

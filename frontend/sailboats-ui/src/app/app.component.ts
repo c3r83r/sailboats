@@ -7,6 +7,7 @@ import { combineLatest } from 'rxjs';
 import { ControlPanelComponent } from './features/simulation/components/control-panel/control-panel.component';
 import { WaterCanvasComponent } from './features/simulation/components/water-canvas/water-canvas.component';
 import { AuthService } from './core/services/auth.service';
+import { PublicStatsService } from './core/services/public-stats.service';
 import { SimulationWsService } from './core/services/simulation-ws.service';
 import { SimulationActions } from './store/simulation/simulation.actions';
 import { selectBoats, selectBuoys, selectConnected, selectControls, selectIslands, selectLake, selectLakes, selectPlayerBoatId, selectProjectiles, selectWind, selectWorld } from './store/simulation/simulation.selectors';
@@ -120,6 +121,20 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
         <div class="brand">
           <h1>Sailboats</h1>
           <p>Multiplayer real-time sailing simulator</p>
+        </div>
+        <div class="public-stats" *ngIf="publicStats$ | async as stats">
+          <div class="stat-pill">
+            <span class="stat-value">{{ stats.registeredUsers }}</span>
+            <span class="stat-label">zarejestrowanych</span>
+          </div>
+          <div class="stat-pill accent">
+            <span class="stat-value">{{ stats.activeUsers }}</span>
+            <span class="stat-label">aktywnych / {{ stats.activeWindowHours }}h</span>
+          </div>
+          <div class="stat-pill live">
+            <span class="stat-value">{{ stats.onlineUsers }}</span>
+            <span class="stat-label">online teraz</span>
+          </div>
         </div>
         <div class="lake" *ngIf="lake$ | async as lake">
           <span class="lake-name">{{ lake.name ?? 'Akwen' }}</span>
@@ -272,6 +287,49 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
     }
     .status.online {
       background: rgba(31, 143, 87, 0.9);
+    }
+
+    .public-stats {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-left: auto;
+    }
+
+    .stat-pill {
+      min-width: 128px;
+      padding: 10px 14px;
+      border-radius: 16px;
+      background: rgba(6, 24, 41, 0.68);
+      border: 1px solid rgba(143, 227, 255, 0.14);
+      display: grid;
+      gap: 2px;
+      box-shadow: 0 12px 28px rgba(0, 0, 0, 0.18);
+    }
+
+    .stat-pill.accent {
+      background: linear-gradient(135deg, rgba(16, 102, 140, 0.85), rgba(8, 47, 74, 0.92));
+      border-color: rgba(143, 227, 255, 0.2);
+    }
+
+    .stat-pill.live {
+      background: linear-gradient(135deg, rgba(30, 138, 86, 0.88), rgba(9, 50, 33, 0.94));
+      border-color: rgba(163, 244, 194, 0.22);
+    }
+
+    .stat-value {
+      font-size: 1.2rem;
+      font-weight: 800;
+      color: #f4fbff;
+      line-height: 1;
+    }
+
+    .stat-label {
+      font-size: 0.76rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: rgba(216, 244, 255, 0.78);
     }
 
     .lake {
@@ -867,6 +925,10 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
         grid-template-columns: 1fr;
       }
 
+      .public-stats {
+        margin-left: 0;
+      }
+
       .status {
         margin-left: 0;
       }
@@ -878,6 +940,7 @@ export class AppComponent implements OnInit, OnDestroy {
   private readonly store = inject(Store);
   private readonly destroyRef = inject(DestroyRef);
   private readonly auth = inject(AuthService);
+  private readonly publicStats = inject(PublicStatsService);
   private readonly ws = inject(SimulationWsService);
 
   controls: HelmControlState = {
@@ -899,6 +962,7 @@ export class AppComponent implements OnInit, OnDestroy {
   displayName = '';
   authError = '';
   authBusy = false;
+  publicStats$ = this.publicStats.stats$;
 
   // Lake browser overlay.
   showLakeBrowser = false;
@@ -1354,6 +1418,8 @@ export class AppComponent implements OnInit, OnDestroy {
     this.awayDisconnected = true;
     this.ws.disconnect();
     this.store.dispatch(SimulationActions.disconnected());
+    // Give the server a moment to drop the session, then reflect the drop in the counter.
+    setTimeout(() => this.publicStats.refresh(), 500);
   }
 
   private rejoinAfterIdle(): void {
@@ -1376,6 +1442,8 @@ export class AppComponent implements OnInit, OnDestroy {
     this.store.dispatch(SimulationActions.connect({ token }));
     // Always start fresh: sails down + anchor (resets the boat on login/rejoin).
     this.resetControls();
+    // Give the WS handshake a moment to register, then reflect the join in the counter.
+    setTimeout(() => this.publicStats.refresh(), 500);
   }
 
   private authErrorMessage(status: number | undefined): string {

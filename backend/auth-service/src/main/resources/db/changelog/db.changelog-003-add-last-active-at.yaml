@@ -1,0 +1,13 @@
+databaseChangeLog:
+  - changeSet:
+      id: auth-003-add-last-active-at
+      author: copilot
+      changes:
+        - addColumn:
+            tableName: users
+            columns:
+              - column:
+                  name: last_active_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: true

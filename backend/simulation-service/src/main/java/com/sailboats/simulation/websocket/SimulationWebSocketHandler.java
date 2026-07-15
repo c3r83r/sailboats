@@ -44,6 +44,16 @@ public class SimulationWebSocketHandler extends TextWebSocketHandler {
         this.simulationEngine.addSnapshotListener(this::broadcastSnapshots);
     }
 
+    public long countOnlineUsers() {
+        return sessions.values().stream()
+            .filter(WebSocketSession::isOpen)
+            .map(session -> session.getAttributes().get("userId"))
+            .filter(java.util.Objects::nonNull)
+            .map(Object::toString)
+            .distinct()
+            .count();
+    }
+
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
         // userId/userName are set by AuthHandshakeInterceptor after validating the token.

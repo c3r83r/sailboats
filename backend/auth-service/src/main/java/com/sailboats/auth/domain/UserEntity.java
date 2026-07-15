@@ -29,4 +29,7 @@ public class UserEntity {
 
     @Column(name = "created_at", nullable = false)
     private OffsetDateTime createdAt;
+
+    @Column(name = "last_active_at")
+    private OffsetDateTime lastActiveAt;
 }

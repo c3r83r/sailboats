@@ -8,6 +8,7 @@
 # Node
 **/node_modules/
 frontend/sailboats-ui/dist/
+frontend/sailboats-ui/.angular/
 
 # Logs
 *.log
