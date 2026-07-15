@@ -6,6 +6,7 @@ import { Store } from '@ngrx/store';
 import { combineLatest } from 'rxjs';
 import { ControlPanelComponent } from './features/simulation/components/control-panel/control-panel.component';
 import { WaterCanvasComponent } from './features/simulation/components/water-canvas/water-canvas.component';
+import { Scene3dComponent } from './features/simulation/components/scene-3d/scene-3d.component';
 import { AuthService } from './core/services/auth.service';
 import { PublicStatsService } from './core/services/public-stats.service';
 import { SimulationWsService } from './core/services/simulation-ws.service';
@@ -19,7 +20,7 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [CommonModule, AsyncPipe, FormsModule, ControlPanelComponent, WaterCanvasComponent],
+  imports: [CommonModule, AsyncPipe, FormsModule, ControlPanelComponent, WaterCanvasComponent, Scene3dComponent],
   template: `
     <main class="layout">
       <div class="welcome" *ngIf="!started">
@@ -188,6 +189,7 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
 
         <div class="canvas-stage">
           <app-water-canvas
+            *ngIf="viewMode === '2d'"
             [boats]="(boats$ | async) ?? []"
             [projectiles]="(projectiles$ | async) ?? []"
             [buoys]="(buoys$ | async) ?? []"
@@ -203,6 +205,27 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
             [jibState]="jibState"
             [heel]="heel">
           </app-water-canvas>
+          <app-scene-3d
+            *ngIf="viewMode === '3d'"
+            [boats]="(boats$ | async) ?? []"
+            [projectiles]="(projectiles$ | async) ?? []"
+            [buoys]="(buoys$ | async) ?? []"
+            [islands]="(islands$ | async) ?? []"
+            [worldWidth]="((world$ | async)?.width) ?? 28"
+            [worldHeight]="((world$ | async)?.height) ?? 15.75"
+            [windDirection]="windDirection"
+            [windStrength]="windStrength"
+            [fill]="fullscreen"
+            [controls]="controls"
+            [playerBoatId]="playerBoatId">
+          </app-scene-3d>
+          <button
+            type="button"
+            class="view-toggle"
+            (click)="toggleViewMode()"
+            [title]="viewMode === '2d' ? 'Przełącz na widok 3D' : 'Przełącz na widok 2D'">
+            {{ viewMode === '2d' ? '3D' : '2D' }}
+          </button>
           <button
             type="button"
             class="fs-btn"
@@ -735,6 +758,33 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
       transform: translateY(-1px);
     }
 
+    .view-toggle {
+      position: absolute;
+      top: 12px;
+      right: 58px;
+      z-index: 5;
+      height: 38px;
+      min-width: 42px;
+      padding: 0 12px;
+      display: grid;
+      place-items: center;
+      border-radius: 10px;
+      border: 1px solid rgba(143, 227, 255, 0.35);
+      background: rgba(8, 24, 40, 0.55);
+      color: #d8f4ff;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      font-size: 0.82rem;
+      cursor: pointer;
+      backdrop-filter: blur(6px);
+      transition: background 0.15s ease, transform 0.15s ease;
+    }
+
+    .view-toggle:hover {
+      background: rgba(143, 227, 255, 0.22);
+      transform: translateY(-1px);
+    }
+
     /* Fullscreen: lake fills the viewport, panels float semi-transparent over it. */
     .content.fullscreen {
       position: fixed;
@@ -956,6 +1006,8 @@ export class AppComponent implements OnInit, OnDestroy {
   started = false;
   // Fullscreen mode: lake fills the screen, side panels float over it.
   fullscreen = false;
+  // Rendering view: flat top-down 2D canvas or the WebGL 3D scene (toggle).
+  viewMode: '2d' | '3d' = '2d';
   authMode: 'login' | 'register' = 'login';
   email = '';
   password = '';
@@ -1379,6 +1431,11 @@ export class AppComponent implements OnInit, OnDestroy {
     } catch {
       /* Fullscreen API unavailable: the CSS fullscreen layout still applies. */
     }
+    (document.activeElement as HTMLElement | null)?.blur();
+  }
+
+  toggleViewMode(): void {
+    this.viewMode = this.viewMode === '2d' ? '3d' : '2d';
     (document.activeElement as HTMLElement | null)?.blur();
   }
 
