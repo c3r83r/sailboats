@@ -52,6 +52,16 @@ public class LakeWorld {
 
     private static final double ANCHOR_TURN_RATE = 60.0;
 
+    // Heel & capsize: the lateral component of the rig force leans the boat to
+    // leeward; a big enough gust on a beam reach with full sail knocks it flat.
+    private static final double HEEL_GAIN = 16.0; // deg per unit of heeling pressure
+    private static final double MAX_HEEL_DEG = 55.0;
+    private static final double HEEL_RESPONSE = 0.10; // how fast heel eases toward target
+    private static final double CAPSIZE_HEEL_DEG = 50.0; // beyond this the boat capsizes
+    private static final double CAPSIZE_LIE_DEG = 85.0; // heel angle while lying capsized
+    private static final long CAPSIZE_RECOVER_MS = 4000; // time flat before it rights
+    private static final double CAPSIZE_HEALTH_PENALTY = 8.0; // hull damage from a knockdown
+
     // Dynamic wind: a global gust factor that breathes over time with occasional
     // squalls, and a venturi ("nozzle") boost where the wind funnels through the
     // gap between two nearby islands.
@@ -288,6 +298,7 @@ public class LakeWorld {
         for (BoatState boat : boats.values()) {
             if (boat.isSunk()) {
                 boat.setSpeed(0);
+                boat.setHeel(boat.getHeel() * 0.85);
                 if (now - boat.getSunkAt() >= RESPAWN_MS) {
                     respawn(boat);
                 }
@@ -295,6 +306,27 @@ public class LakeWorld {
             }
 
             double windRad = Math.toRadians(windDirection);
+
+            // Capsized (knocked down): the boat lies flat, dead in the water, and
+            // slowly drifts to leeward until it rights itself after the recovery
+            // window. No helm, sail drive or bot AI runs while capsized.
+            if (boat.isCapsized()) {
+                boat.setSpeed(boat.getSpeed() * 0.9);
+                boat.setX(clampAxis(boat.getX() + Math.cos(windRad) * BASE_DRIFT * DELTA_SECONDS, worldWidth));
+                boat.setY(clampAxis(boat.getY() + Math.sin(windRad) * BASE_DRIFT * DELTA_SECONDS, worldHeight));
+                double lieSign = boat.getHeel() >= 0 ? 1.0 : -1.0;
+                double lie = lieSign * CAPSIZE_LIE_DEG;
+                boat.setHeel(boat.getHeel() + (lie - boat.getHeel()) * 0.2);
+                if (now - boat.getCapsizedAt() >= CAPSIZE_RECOVER_MS) {
+                    // Righted: sails spilled, dead in the water, and took on some water.
+                    boat.setCapsized(false);
+                    boat.setHeel(boat.getHeel() * 0.3);
+                    boat.setSpeed(0);
+                    boat.setSailTrim(0);
+                    boat.setHealth(Math.max(1.0, boat.getHealth() - CAPSIZE_HEALTH_PENALTY));
+                }
+                continue;
+            }
 
             if (boat.isBot()) {
                 // AI helm: steer, trim and fire before the shared physics runs.
@@ -307,6 +339,7 @@ public class LakeWorld {
                 double turnRate = ANCHOR_TURN_RATE * Math.signum(delta) * Math.min(1.0, Math.abs(delta) / 30.0);
                 boat.setHeading(normalizeHeading(boat.getHeading() + turnRate * DELTA_SECONDS));
                 boat.setSpeed(0);
+                boat.setHeel(boat.getHeel() * 0.85);
                 continue;
             }
 
@@ -373,6 +406,23 @@ public class LakeWorld {
             boat.setSpeed(nextSpeed);
             boat.setX(nextX);
             boat.setY(nextY);
+
+            // Heel: the lateral (heeling) component of the rig force leans the
+            // boat to leeward. Strongest on a beam reach with full sail in a
+            // gust; eases smoothly toward the target so it never snaps.
+            double relRad = Math.toRadians(signedDelta(windFrom, nextHeading));
+            double lateral = Math.sin(relRad);
+            double heelPressure = windUnits * boat.getSailTrim() * Math.abs(lateral);
+            double heelTarget = -Math.signum(lateral) * Math.min(MAX_HEEL_DEG, HEEL_GAIN * heelPressure);
+            double newHeel = boat.getHeel() + (heelTarget - boat.getHeel()) * HEEL_RESPONSE;
+            boat.setHeel(newHeel);
+            if (Math.abs(newHeel) >= CAPSIZE_HEEL_DEG) {
+                // Knocked down: laid flat, sails spilled, dead in the water.
+                boat.setCapsized(true);
+                boat.setCapsizedAt(now);
+                boat.setSpeed(0);
+                boat.setSailTrim(0);
+            }
         }
 
         detectCollisions(now);
@@ -393,6 +443,8 @@ public class LakeWorld {
         boat.setAnchored(true);
         boat.setHealth(100);
         boat.setSunk(false);
+        boat.setHeel(0);
+        boat.setCapsized(false);
         // Fresh life starts peaceful: bots ignore the player again until they fire.
         boat.setHasFired(false);
     }
@@ -538,6 +590,8 @@ public class LakeWorld {
                 .kills(boat.getKills())
                 .deaths(boat.getDeaths())
                 .bot(boat.isBot())
+                .heel(boat.getHeel())
+                .capsized(boat.isCapsized())
                 .build()).toList())
             .projectiles(projectiles.stream().map(p -> ProjectileDto.builder()
                 .id(p.id)
@@ -559,6 +613,11 @@ public class LakeWorld {
     private double normalizeHeading(double heading) {
         double normalized = heading % 360;
         return normalized < 0 ? normalized + 360 : normalized;
+    }
+
+    // Clamp a world coordinate to [0, max].
+    private double clampAxis(double value, double max) {
+        return value < 0 ? 0 : (value > max ? max : value);
     }
 
     // ---- AI bots ----------------------------------------------------------

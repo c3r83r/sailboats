@@ -392,17 +392,28 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
       // Other boats fall back to a generic trimmed look since we don't have their helm state.
       const mainSt: SailVisualState = isPlayer ? this.mainState : boat.sailTrim > 0.05 ? 'trim' : 'luff';
       const jibSt: SailVisualState = isPlayer ? this.jibState : boat.sailTrim > 0.05 ? 'trim' : 'luff';
-      const heel = isPlayer ? this.heel : 0;
+      const capsized = !!boat.capsized;
+      // Heel is now server-authoritative for every boat (degrees). Fall back to
+      // the local player estimate only if the server hasn't sent one yet.
+      const heelDeg = boat.heel ?? (isPlayer ? this.heel * 35 : 0);
+      const heel = this.clamp(heelDeg / 35, -1.2, 1.2);
       const color = this.boatColor(boat.boatId);
 
       // Sunk hulls drop their sails like an anchored boat (no canvas, no way on).
-      this.drawBoatShadow(ctx, x, y, scale, boat.heading, sunk);
-      this.drawBoat(ctx, { x, y }, scale, boat.heading, boat.speed, main, jib, rudder, isPlayer, mainSt, jibSt, heel, color, anchored || sunk);
+      this.drawBoatShadow(ctx, x, y, scale, boat.heading, sunk || capsized);
+      this.drawBoat(ctx, { x, y }, scale, boat.heading, boat.speed, main, jib, rudder, isPlayer, mainSt, jibSt, heel, color, anchored || sunk || capsized);
 
-      if (anchored && !sunk) {
+      if (anchored && !sunk && !capsized) {
         this.drawAnchorBadge(ctx, x, y, scale, boat.heading);
       }
       this.drawHealthBar(ctx, x, y, scale, health, sunk);
+      if (capsized && !sunk) {
+        ctx.fillStyle = 'rgba(255, 209, 102, 0.95)';
+        ctx.font = `${Math.max(9, 11 * scale)}px Segoe UI`;
+        ctx.textAlign = 'center';
+        ctx.fillText('WYWRÓCONA', x, y - 24 * scale);
+        ctx.textAlign = 'left';
+      }
 
       ctx.fillStyle = isPlayer ? '#ffe19a' : boat.bot ? 'rgba(255, 180, 180, 0.92)' : 'rgba(248, 251, 255, 0.92)';
       ctx.font = `${Math.max(10, 13 * scale)}px Segoe UI`;

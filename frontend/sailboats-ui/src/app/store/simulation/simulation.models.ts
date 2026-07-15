@@ -13,6 +13,9 @@ export interface BoatState {
   kills?: number;
   deaths?: number;
   bot?: boolean;
+  // Server-computed heel angle in degrees (signed) and capsize (knockdown) flag.
+  heel?: number;
+  capsized?: boolean;
 }
 
 export type FireSide = 'bow' | 'stern' | 'port' | 'starboard';

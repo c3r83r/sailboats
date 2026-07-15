@@ -31,4 +31,11 @@ public class BoatState {
     private boolean bot;
     // True once a human has fired a shot; bots only return fire on aggressors.
     private boolean hasFired;
+    // Heel angle in degrees (signed: + = leaning to starboard, - = to port),
+    // driven by the lateral rig force. Integrated smoothly each tick.
+    private double heel;
+    // Capsize (knockdown): true while the boat is laid flat by an over-heel; it
+    // lies dead in the water until it rights itself after CAPSIZE_RECOVER_MS.
+    private boolean capsized;
+    private long capsizedAt;
 }
