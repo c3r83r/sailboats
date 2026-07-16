@@ -100,7 +100,13 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
   private wakeTex?: THREE.CanvasTexture;
   private wakeTrail: { x: number; y: number }[] = [];
   private wakeSpeed = 0; // smoothed hull speed (scene units/sec) driving foam opacity
-  private readonly WAKE_POINTS = 48;
+  private readonly WAKE_POINTS = 60;
+  // Bow wave (the foam "moustache" spreading from the bow) — a flat quad aimed
+  // forward and scaled/faded with speed.
+  private bowWave?: THREE.Mesh;
+  private bowWaveTex?: THREE.CanvasTexture;
+  // Per-boat floating nickname labels (billboard sprites above the masthead).
+  private nameLabels = new Map<string, THREE.Sprite>();
   // A single-frame jump larger than this (scene units) is a teleport (respawn or
   // lake change), not sailing — we snap the visuals instead of gliding across.
   private readonly TELEPORT_SNAP_DIST = 5;
@@ -213,6 +219,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     this.buildSky();
     this.buildWater();
     this.buildWake();
+    this.buildBowWave();
 
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(host);
@@ -244,6 +251,11 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     this.glassTex?.dispose();
     this.wakeGeo?.dispose();
     this.wakeTex?.dispose();
+    this.bowWaveTex?.dispose();
+    this.nameLabels.forEach((s) => {
+      s.material.map?.dispose();
+      s.material.dispose();
+    });
     this.waterGeo?.dispose();
     this.windGeo?.dispose();
     this.renderer?.dispose();
@@ -400,10 +412,37 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
 
   // Foam texture for the wake: white, with soft feathered side edges (u) and a
   // lengthwise fade from turbulent near the boat (v=1) to clear at the tail
-  // (v=0), broken up by speckle so it reads as churned foam not a flat stripe.
+  // (v=0), broken up by layered value-noise so it reads as churned foam clumps
+  // with fore-aft streaks (prop wash) rather than a flat grey stripe.
   private makeWakeTexture(): THREE.CanvasTexture {
-    const W = 64;
-    const H = 128;
+    const W = 128;
+    const H = 256;
+    // Layered value noise: a few random lattices sampled with smooth (cosine)
+    // interpolation and summed, giving soft foam blobs at mixed scales.
+    const lattice = (cols: number, rows: number) => {
+      const g = new Float32Array(cols * rows);
+      for (let i = 0; i < g.length; i++) g[i] = Math.random();
+      return { g, cols, rows };
+    };
+    const layers = [lattice(8, 16), lattice(16, 34), lattice(32, 70)];
+    const weights = [0.5, 0.32, 0.18];
+    const smooth = (a: number, b: number, f: number) => {
+      const t = (1 - Math.cos(f * Math.PI)) * 0.5;
+      return a * (1 - t) + b * t;
+    };
+    const sample = (lay: { g: Float32Array; cols: number; rows: number }, u: number, v: number) => {
+      const fx = u * (lay.cols - 1);
+      const fy = v * (lay.rows - 1);
+      const x0 = Math.floor(fx);
+      const y0 = Math.floor(fy);
+      const x1 = Math.min(lay.cols - 1, x0 + 1);
+      const y1 = Math.min(lay.rows - 1, y0 + 1);
+      const tx = fx - x0;
+      const ty = fy - y0;
+      const top = smooth(lay.g[y0 * lay.cols + x0], lay.g[y0 * lay.cols + x1], tx);
+      const bot = smooth(lay.g[y1 * lay.cols + x0], lay.g[y1 * lay.cols + x1], tx);
+      return smooth(top, bot, ty);
+    };
     const c = document.createElement('canvas');
     c.width = W;
     c.height = H;
@@ -412,23 +451,112 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     const d = img.data;
     for (let y = 0; y < H; y++) {
       const v = y / (H - 1); // 0 tail, 1 boat  (flipY disabled below)
-      const lenFade = Math.pow(v, 0.85); // strong near the boat, gone at the tail
+      // Fade to clear at the tail, plus a bright dense churn band right behind
+      // the transom (v near 1).
+      const lenFade = Math.pow(v, 0.7);
+      const churn = 0.35 * Math.max(0, (v - 0.72) / 0.28); // extra brightness at the boat
       for (let x = 0; x < W; x++) {
         const u = x / (W - 1);
         const edge = Math.sin(Math.PI * u); // 0 at the sides, 1 in the middle
-        const edgeFade = Math.pow(edge, 0.7);
-        // Broken foam: coarse speckle plus a couple of drifting ripples.
-        const speckle = 0.55 + 0.45 * Math.random();
-        const ripple = 0.8 + 0.2 * Math.sin(v * 26 + u * 7);
-        const a = Math.max(0, Math.min(1, edgeFade * lenFade * speckle * ripple));
+        const edgeFade = Math.pow(edge, 0.55);
+        let foam = 0;
+        for (let l = 0; l < layers.length; l++) foam += weights[l] * sample(layers[l], u, v);
+        // Fore-aft streaks (prop wash) from a stretched high-frequency band.
+        const streak = 0.75 + 0.25 * sample(layers[2], (u * 3) % 1, v * 0.5);
+        const base = edgeFade * lenFade * (0.25 + 0.9 * foam) * streak;
+        const a = Math.max(0, Math.min(1, base + churn * edgeFade));
         const i = (y * W + x) * 4;
         d[i] = 255;
         d[i + 1] = 255;
         d[i + 2] = 255;
-        d[i + 3] = Math.round(a * 235);
+        d[i + 3] = Math.round(a * 255);
       }
     }
     ctx.putImageData(img, 0, 0);
+    const tex = new THREE.CanvasTexture(c);
+    tex.flipY = false;
+    tex.anisotropy = 4;
+    tex.needsUpdate = true;
+    return tex;
+  }
+
+  // Bow wave: a flat quad aimed forward from the bow, textured with two foam
+  // "moustache" arms that fan out from the stem. Scaled and faded with speed.
+  private buildBowWave(): void {
+    const geo = new THREE.BufferGeometry();
+    // A quad on the water plane: local +Z is forward, X is lateral, Y ~ 0.
+    const positions = new Float32Array([
+      -0.5, 0, -0.5,
+      0.5, 0, -0.5,
+      -0.5, 0, 0.5,
+      0.5, 0, 0.5,
+    ]);
+    const uv = new Float32Array([
+      0, 0,
+      1, 0,
+      0, 1,
+      1, 1,
+    ]);
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    geo.setIndex([0, 2, 1, 1, 2, 3]);
+    this.sharedGeo.push(geo);
+    this.bowWaveTex = this.makeBowWaveTexture();
+    const mat = new THREE.MeshBasicMaterial({
+      map: this.bowWaveTex,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    this.sharedMat.push(mat);
+    this.bowWave = new THREE.Mesh(geo, mat);
+    this.bowWave.frustumCulled = false;
+    this.bowWave.renderOrder = 2;
+    this.scene?.add(this.bowWave);
+  }
+
+  // Two soft foam arms diverging from the stem (bottom-centre, v→forward=1).
+  private makeBowWaveTexture(): THREE.CanvasTexture {
+    const S = 128;
+    const c = document.createElement('canvas');
+    c.width = S;
+    c.height = S;
+    const ctx = c.getContext('2d')!;
+    ctx.clearRect(0, 0, S, S);
+    // The stem sits at the forward end (v=1 → canvas bottom, since flipY is off).
+    // Two thick, soft, tapering strokes peel off the stem and sweep back and
+    // outward (decreasing v), like a real bow moustache, plus a bright bloom
+    // where the bow parts the water.
+    const stemX = S * 0.5;
+    const stemY = S * 0.9;
+    const arm = (dir: number) => {
+      for (let k = 0; k < 24; k++) {
+        const s = k / 23;
+        // Sweep outward and back; taper the width and fade toward the tail.
+        const x = stemX + dir * (9 + s * 48);
+        const y = stemY - s * (S * 0.82);
+        const r = (11 - s * 9) * 1.2;
+        const alpha = 0.55 * (1 - s) * (0.6 + 0.4 * Math.random());
+        const grd = ctx.createRadialGradient(x, y, 0, x, y, r);
+        grd.addColorStop(0, `rgba(255,255,255,${alpha})`);
+        grd.addColorStop(1, 'rgba(255,255,255,0)');
+        ctx.fillStyle = grd;
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    };
+    arm(1);
+    arm(-1);
+    // Bright bloom at the stem where the bow parts the water.
+    const bloom = ctx.createRadialGradient(stemX, stemY, 0, stemX, stemY, 18);
+    bloom.addColorStop(0, 'rgba(255,255,255,0.9)');
+    bloom.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = bloom;
+    ctx.beginPath();
+    ctx.arc(stemX, stemY, 18, 0, Math.PI * 2);
+    ctx.fill();
     const tex = new THREE.CanvasTexture(c);
     tex.flipY = false;
     tex.needsUpdate = true;
@@ -1482,6 +1610,14 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
           }
         }
       });
+
+      // Floating nickname above the masthead (billboard sprite, world-space so it
+      // never heels with the hull). Redraw only when the name changes.
+      const label = this.ensureNameLabel(boat.boatId, boat.name);
+      if (label) {
+        label.visible = !boat.sunk;
+        label.position.set(disp.x, wy + 5.7, disp.y);
+      }
     }
 
     // Remove meshes (and display state) for boats that left.
@@ -1490,8 +1626,88 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
         this.scene?.remove(g);
         this.boatMeshes.delete(id);
         this.boatDisplay.delete(id);
+        const label = this.nameLabels.get(id);
+        if (label) {
+          this.scene?.remove(label);
+          label.material.map?.dispose();
+          label.material.dispose();
+          this.nameLabels.delete(id);
+        }
       }
     }
+  }
+
+  // Get or (re)build the nickname billboard for a boat, redrawing its texture
+  // only when the displayed name actually changes.
+  private ensureNameLabel(boatId: string, name?: string): THREE.Sprite | undefined {
+    const text = (name ?? '').trim() || 'Żeglarz';
+    let sprite = this.nameLabels.get(boatId);
+    if (sprite && sprite.userData['name'] === text) {
+      return sprite;
+    }
+    const { canvas, aspect } = this.drawNameCanvas(text);
+    if (!sprite) {
+      const mat = new THREE.SpriteMaterial({
+        map: new THREE.CanvasTexture(canvas),
+        transparent: true,
+        depthTest: false,
+        depthWrite: false,
+        opacity: 0.92,
+      });
+      sprite = new THREE.Sprite(mat);
+      sprite.renderOrder = 6;
+      this.nameLabels.set(boatId, sprite);
+      this.scene?.add(sprite);
+    } else {
+      sprite.material.map?.dispose();
+      sprite.material.map = new THREE.CanvasTexture(canvas);
+      sprite.material.needsUpdate = true;
+    }
+    sprite.userData['name'] = text;
+    const height = 0.82; // world units tall
+    sprite.scale.set(height * aspect, height, 1);
+    return sprite;
+  }
+
+  // Render a nickname onto a canvas: a soft translucent pill with crisp white
+  // text, sized to the text so the sprite never stretches.
+  private drawNameCanvas(text: string): { canvas: HTMLCanvasElement; aspect: number } {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const fontPx = 34;
+    const padX = 22;
+    const measure = document.createElement('canvas').getContext('2d')!;
+    measure.font = `600 ${fontPx}px "Segoe UI", system-ui, sans-serif`;
+    const textW = Math.ceil(measure.measureText(text).width);
+    const cw = textW + padX * 2;
+    const ch = fontPx + 24;
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(cw * dpr);
+    canvas.height = Math.round(ch * dpr);
+    const ctx = canvas.getContext('2d')!;
+    ctx.scale(dpr, dpr);
+    // Rounded translucent pill background.
+    const r = ch / 2;
+    ctx.beginPath();
+    ctx.moveTo(r, 0);
+    ctx.arcTo(cw, 0, cw, ch, r);
+    ctx.arcTo(cw, ch, 0, ch, r);
+    ctx.arcTo(0, ch, 0, 0, r);
+    ctx.arcTo(0, 0, cw, 0, r);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(8, 18, 30, 0.5)';
+    ctx.fill();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = 'rgba(143, 227, 255, 0.35)';
+    ctx.stroke();
+    // Text.
+    ctx.font = `600 ${fontPx}px "Segoe UI", system-ui, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#eaf6ff';
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.55)';
+    ctx.shadowBlur = 3;
+    ctx.fillText(text, cw / 2, ch / 2 + 1);
+    return { canvas, aspect: cw / ch };
   }
 
   // Reshape both sails, aim the boom, and toggle rig visibility for one boat.
@@ -1862,6 +2078,9 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       }
       this.wakeSpeed = 0;
       (this.wake.material as THREE.MeshBasicMaterial).opacity = 0;
+      if (this.bowWave) {
+        (this.bowWave.material as THREE.MeshBasicMaterial).opacity = 0;
+      }
       return;
     }
     // Smooth the hull speed (units/sec) that drives foam opacity.
@@ -1895,11 +2114,13 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       const px = -dz;
       const pz = dx;
       const v = i / (P - 1); // 0 tail, 1 boat
-      // Wakes are narrow at the transom and fan out astern; taper accordingly.
-      const halfW = 0.5 + (1 - v) * 2.6;
+      // Narrow at the transom, fanning out astern (Kelvin wake), widening more
+      // toward the tail then easing so the far end doesn't balloon.
+      const spread = Math.pow(1 - v, 0.85);
+      const halfW = 0.32 + spread * 3.1;
       const cx = cur.x;
       const cz = cur.y;
-      const y = this.waveHeight(cx, cz, t) + 0.07;
+      const y = this.waveHeight(cx, cz, t) + 0.08;
       const a = i * 2 * 3;
       const b = (i * 2 + 1) * 3;
       pos[a] = cx + px * halfW;
@@ -1911,9 +2132,32 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     }
     this.wakeGeo.attributes['position'].needsUpdate = true;
     this.wakeGeo.computeVertexNormals();
-    // Fade the foam in with speed; invisible when nearly stopped.
-    const target = Math.max(0, Math.min(0.9, (this.wakeSpeed - 0.4) / 3.2));
+    // Fade the foam in with speed; invisible when nearly stopped. Shows from a
+    // gentle glide and saturates by cruising speed.
+    const target = Math.max(0, Math.min(0.95, (this.wakeSpeed - 0.25) / 2.2));
     mat.opacity += (target - mat.opacity) * (1 - Math.exp(-5 * dt));
+
+    // Bow wave: sit the moustache quad so its stem lands at the bow, aimed along
+    // the heading, growing with speed and sweeping foam back along the hull.
+    if (this.bowWave) {
+      const grow = Math.min(1.4, 0.5 + this.wakeSpeed * 0.25);
+      const scaleZ = 3.0 * grow;
+      // Place the quad centre so its forward (+Z) edge reaches ~the bow (1.2 ahead
+      // of the hull centre); arms then trail back alongside the hull.
+      const centreFwd = 1.2 - scaleZ / 2;
+      const bx = boatPos.x + fx * centreFwd;
+      const bz = boatPos.z + fz * centreFwd;
+      const by = this.waveHeight(bx, bz, t) + 0.09;
+      this.bowWave.position.set(bx, by, bz);
+      this.bowWave.quaternion.setFromUnitVectors(
+        new THREE.Vector3(0, 0, 1),
+        new THREE.Vector3(fx, 0, fz),
+      );
+      this.bowWave.scale.set(2.2 * grow, 1, scaleZ);
+      const bowMat = this.bowWave.material as THREE.MeshBasicMaterial;
+      const bowTarget = Math.max(0, Math.min(0.85, (this.wakeSpeed - 0.3) / 2.4));
+      bowMat.opacity += (bowTarget - bowMat.opacity) * (1 - Math.exp(-5 * dt));
+    }
   }
 
   // A field of short line "streaks" drifting downwind around the player so the
