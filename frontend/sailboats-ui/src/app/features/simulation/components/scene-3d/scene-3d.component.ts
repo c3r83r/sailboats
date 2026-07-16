@@ -79,8 +79,28 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
   private water?: THREE.Mesh;
   private waterGeo?: THREE.PlaneGeometry;
   private waterBaseZ: Float32Array = new Float32Array(0);
-  private readonly WATER_SIZE = 90;
-  private readonly WATER_SEG = 72;
+  private readonly WATER_SIZE = 150;
+  private readonly WATER_SEG = 120;
+
+  // Colours shared by the fog, the sky dome's horizon band and the scene
+  // background, so the sea fades seamlessly into the horizon. VIEW_RADIUS is the
+  // distance at which the fog turns fully opaque — the circle of visibility.
+  private readonly HORIZON_COLOR = new THREE.Color('#bcd7e8');
+  private readonly SKY_TOP_COLOR = new THREE.Color('#5b93c7');
+  private readonly VIEW_RADIUS = 66;
+
+  // Sky dome (a big inverted sphere with a vertical gradient) giving a horizon
+  // line where the graded sky meets the fogged sea.
+  private sky?: THREE.Mesh;
+
+  // Kielwater (wake): a foam ribbon trailing the player, rebuilt each frame from
+  // a short rolling history of stern positions.
+  private wake?: THREE.Mesh;
+  private wakeGeo?: THREE.BufferGeometry;
+  private wakeTex?: THREE.CanvasTexture;
+  private wakeTrail: { x: number; y: number }[] = [];
+  private wakeSpeed = 0; // smoothed hull speed (scene units/sec) driving foam opacity
+  private readonly WAKE_POINTS = 48;
 
   // Per-id mesh pools so we add/remove/update meshes as the sim changes.
   private boatMeshes = new Map<string, THREE.Group>();
@@ -113,8 +133,14 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
   private camLook = new THREE.Vector3(); // smoothed look-at target
   private camReady = false;
 
-  // World boundary frame (built once) and drifting wind streaks.
+  // World boundary frame (rebuilt when the lake size changes) and drifting wind
+  // streaks. `boundsW/H` remember which world the current fence was built for so
+  // we can rebuild it when the player switches to a differently-sized lake.
   private boundsGroup?: THREE.Group;
+  private boundsW = 0;
+  private boundsH = 0;
+  private boundsDisposables: { dispose(): void }[] = [];
+  private glassTex?: THREE.CanvasTexture;
   private windStreaks?: THREE.LineSegments;
   private windGeo?: THREE.BufferGeometry;
   private windHeads: Float32Array = new Float32Array(0); // xyz per streak, player-relative
@@ -166,8 +192,10 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     this.compassCtx = cc.getContext('2d');
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color('#8fc4e6');
-    this.scene.fog = new THREE.Fog('#8fc4e6', 55, 130);
+    this.scene.background = this.HORIZON_COLOR.clone();
+    // Radial fog fading to the horizon colour: everything past VIEW_RADIUS blends
+    // into the horizon, so the visible world is a circle around the player.
+    this.scene.fog = new THREE.Fog(this.HORIZON_COLOR.getHex(), this.VIEW_RADIUS * 0.35, this.VIEW_RADIUS);
 
     this.camera = new THREE.PerspectiveCamera(52, 16 / 9, 0.1, 400);
     this.camera.position.set(0, 24, 20);
@@ -179,7 +207,9 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     sun.position.set(-30, 45, -18);
     this.scene.add(sun);
 
+    this.buildSky();
     this.buildWater();
+    this.buildWake();
 
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(host);
@@ -207,6 +237,10 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     this.sharedMat.forEach((m) => m.dispose());
     this.sailTexture?.dispose();
     this.jibSailTexture?.dispose();
+    this.boundsDisposables.forEach((d) => d.dispose());
+    this.glassTex?.dispose();
+    this.wakeGeo?.dispose();
+    this.wakeTex?.dispose();
     this.waterGeo?.dispose();
     this.windGeo?.dispose();
     this.renderer?.dispose();
@@ -277,6 +311,125 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     this.sharedMat.push(mat);
     this.water = new THREE.Mesh(this.waterGeo, mat);
     this.scene?.add(this.water);
+  }
+
+  // Sky dome: a large inverted sphere with a vertical gradient (deep blue up
+  // high, pale at the horizon). It ignores fog so the graded sky stays crisp,
+  // while the fogged sea fades into the matching horizon colour beneath it —
+  // together they read as a clean horizon line ringing the player.
+  private buildSky(): void {
+    const geo = new THREE.SphereGeometry(200, 32, 16);
+    this.sharedGeo.push(geo);
+    const mat = new THREE.ShaderMaterial({
+      side: THREE.BackSide,
+      fog: false,
+      depthWrite: false,
+      uniforms: {
+        topColor: { value: this.SKY_TOP_COLOR.clone() },
+        horizonColor: { value: this.HORIZON_COLOR.clone() },
+      },
+      vertexShader: `
+        varying vec3 vPos;
+        void main() {
+          vPos = position;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 topColor;
+        uniform vec3 horizonColor;
+        varying vec3 vPos;
+        void main() {
+          // Normalised height (0 at horizon, 1 straight up); soft curve so the
+          // horizon band is thin and the sky opens up above it.
+          float h = clamp(vPos.y / 200.0, 0.0, 1.0);
+          float t = pow(h, 0.42);
+          gl_FragColor = vec4(mix(horizonColor, topColor, t), 1.0);
+        }
+      `,
+    });
+    this.sharedMat.push(mat);
+    this.sky = new THREE.Mesh(geo, mat);
+    this.sky.frustumCulled = false;
+    this.scene?.add(this.sky);
+  }
+
+  // Kielwater (wake): a tapering foam ribbon that trails the player. The geometry
+  // is a two-vertex-wide strip whose rows are re-placed along the boat's recent
+  // path every frame; the foam texture bakes in the soft edges and the fade to
+  // clear water at the tail, and the whole ribbon fades out when the boat slows.
+  private buildWake(): void {
+    const P = this.WAKE_POINTS;
+    this.wakeGeo = new THREE.BufferGeometry();
+    this.wakeGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(P * 2 * 3), 3));
+    const uv = new Float32Array(P * 2 * 2);
+    for (let i = 0; i < P; i++) {
+      const v = i / (P - 1); // 0 at the tail, 1 at the boat
+      uv[(i * 2) * 2] = 0;
+      uv[(i * 2) * 2 + 1] = v;
+      uv[(i * 2 + 1) * 2] = 1;
+      uv[(i * 2 + 1) * 2 + 1] = v;
+    }
+    this.wakeGeo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    const idx: number[] = [];
+    for (let i = 0; i < P - 1; i++) {
+      const a = i * 2;
+      const b = i * 2 + 1;
+      const c = (i + 1) * 2;
+      const d = (i + 1) * 2 + 1;
+      idx.push(a, c, b, b, c, d);
+    }
+    this.wakeGeo.setIndex(idx);
+    this.wakeTex = this.makeWakeTexture();
+    const mat = new THREE.MeshBasicMaterial({
+      map: this.wakeTex,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    this.sharedMat.push(mat);
+    this.wake = new THREE.Mesh(this.wakeGeo, mat);
+    this.wake.frustumCulled = false;
+    this.wake.renderOrder = 2; // draw over the (transparent) water
+    this.scene?.add(this.wake);
+  }
+
+  // Foam texture for the wake: white, with soft feathered side edges (u) and a
+  // lengthwise fade from turbulent near the boat (v=1) to clear at the tail
+  // (v=0), broken up by speckle so it reads as churned foam not a flat stripe.
+  private makeWakeTexture(): THREE.CanvasTexture {
+    const W = 64;
+    const H = 128;
+    const c = document.createElement('canvas');
+    c.width = W;
+    c.height = H;
+    const ctx = c.getContext('2d')!;
+    const img = ctx.createImageData(W, H);
+    const d = img.data;
+    for (let y = 0; y < H; y++) {
+      const v = y / (H - 1); // 0 tail, 1 boat  (flipY disabled below)
+      const lenFade = Math.pow(v, 0.85); // strong near the boat, gone at the tail
+      for (let x = 0; x < W; x++) {
+        const u = x / (W - 1);
+        const edge = Math.sin(Math.PI * u); // 0 at the sides, 1 in the middle
+        const edgeFade = Math.pow(edge, 0.7);
+        // Broken foam: coarse speckle plus a couple of drifting ripples.
+        const speckle = 0.55 + 0.45 * Math.random();
+        const ripple = 0.8 + 0.2 * Math.sin(v * 26 + u * 7);
+        const a = Math.max(0, Math.min(1, edgeFade * lenFade * speckle * ripple));
+        const i = (y * W + x) * 4;
+        d[i] = 255;
+        d[i + 1] = 255;
+        d[i + 2] = 255;
+        d[i + 3] = Math.round(a * 235);
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    const tex = new THREE.CanvasTexture(c);
+    tex.flipY = false;
+    tex.needsUpdate = true;
+    return tex;
   }
 
   private ensureIslands(): void {
@@ -1506,29 +1659,53 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     return v < 0 ? 0 : v > 1 ? 1 : v;
   }
 
-  // Visible boundary of the playable area: a translucent fence with a bright top
-  // rope, a waterline edge and marker posts, built once from the world size.
+  // Visible boundary of the playable area: a wall of cracked glass around the
+  // world edge. Rebuilt whenever the lake size changes (so switching between a
+  // small and a large lake no longer leaves the wall stranded at the old size).
   private ensureWorldBounds(): void {
-    if (this.boundsGroup || !this.scene) {
+    if (!this.scene) {
       return;
     }
+    if (this.boundsGroup && this.boundsW === this.worldWidth && this.boundsH === this.worldHeight) {
+      return;
+    }
+    // Tear down a stale fence (different lake size) before rebuilding.
+    if (this.boundsGroup) {
+      this.scene.remove(this.boundsGroup);
+      for (const d of this.boundsDisposables) {
+        d.dispose();
+      }
+      this.boundsDisposables = [];
+    }
+
     const W = this.worldWidth;
     const H = this.worldHeight;
-    const wallH = 2.0;
+    const wallH = 3.0;
     const g = new THREE.Group();
+    const glass = this.getGlassTexture();
 
-    const wallMat = new THREE.MeshBasicMaterial({
-      color: 0xff6b52,
-      transparent: true,
-      opacity: 0.1,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-    });
-    this.sharedMat.push(wallMat);
-    const mkWall = (w: number, x: number, z: number, ry: number) => {
-      const geo = new THREE.PlaneGeometry(w, wallH);
-      this.sharedGeo.push(geo);
-      const m = new THREE.Mesh(geo, wallMat);
+    // One glass sheet per edge. Each wall clones the shared crack texture so it
+    // can repeat at its own length while keeping the shards roughly square.
+    const mkWall = (len: number, x: number, z: number, ry: number) => {
+      const geo = new THREE.PlaneGeometry(len, wallH);
+      this.boundsDisposables.push(geo);
+      const tex = glass.clone();
+      tex.needsUpdate = true;
+      tex.wrapS = THREE.RepeatWrapping;
+      tex.wrapT = THREE.ClampToEdgeWrapping;
+      tex.repeat.set(Math.max(1, Math.round(len / wallH)), 1);
+      this.boundsDisposables.push(tex);
+      const mat = new THREE.MeshBasicMaterial({
+        map: tex,
+        color: 0xcfe9ff,
+        transparent: true,
+        opacity: 0.34,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      });
+      this.boundsDisposables.push(mat);
+      const m = new THREE.Mesh(geo, mat);
       m.position.set(x, wallH / 2, z);
       m.rotation.y = ry;
       g.add(m);
@@ -1538,6 +1715,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     mkWall(H, 0, H / 2, Math.PI / 2);
     mkWall(H, W, H / 2, Math.PI / 2);
 
+    // Icy top rim and a faint waterline edge to give the glass a defined border.
     const corners = (y: number) => [
       new THREE.Vector3(0, y, 0),
       new THREE.Vector3(W, y, 0),
@@ -1545,47 +1723,172 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       new THREE.Vector3(0, y, H),
     ];
     const topGeo = new THREE.BufferGeometry().setFromPoints(corners(wallH));
-    const botGeo = new THREE.BufferGeometry().setFromPoints(corners(0.08));
-    this.sharedGeo.push(topGeo, botGeo);
-    const topMat = new THREE.LineBasicMaterial({ color: 0xffd24a });
-    const botMat = new THREE.LineBasicMaterial({ color: 0x9fe8d0 });
-    this.sharedMat.push(topMat, botMat);
+    const botGeo = new THREE.BufferGeometry().setFromPoints(corners(0.05));
+    this.boundsDisposables.push(topGeo, botGeo);
+    const topMat = new THREE.LineBasicMaterial({ color: 0xd8f6ff, transparent: true, opacity: 0.85 });
+    const botMat = new THREE.LineBasicMaterial({ color: 0x8fd6ff, transparent: true, opacity: 0.5 });
+    this.boundsDisposables.push(topMat, botMat);
     g.add(new THREE.LineLoop(topGeo, topMat));
     g.add(new THREE.LineLoop(botGeo, botMat));
 
-    const postMat = new THREE.MeshStandardMaterial({ color: 0xd94f3d, roughness: 0.6 });
-    const capMat = new THREE.MeshStandardMaterial({ color: 0xffe08a, emissive: 0x553a00, roughness: 0.5 });
-    const postGeo = new THREE.CylinderGeometry(0.09, 0.12, wallH + 0.4, 8);
-    const capGeo = new THREE.SphereGeometry(0.22, 10, 8);
-    this.sharedMat.push(postMat, capMat);
-    this.sharedGeo.push(postGeo, capGeo);
-    const addPost = (x: number, z: number) => {
-      const post = new THREE.Mesh(postGeo, postMat);
-      post.position.set(x, (wallH + 0.4) / 2, z);
-      g.add(post);
-      const cap = new THREE.Mesh(capGeo, capMat);
-      cap.position.set(x, wallH + 0.45, z);
-      g.add(cap);
-    };
-    const step = 6;
-    const xs: number[] = [];
-    for (let x = 0; x <= W; x += step) {
-      xs.push(x);
+    this.boundsGroup = g;
+    this.boundsW = W;
+    this.boundsH = H;
+    this.scene.add(g);
+  }
+
+  // A shattered-glass texture: a translucent frosted tint overlaid with several
+  // impact points, each spraying radial cracks joined by concentric shard rings.
+  private getGlassTexture(): THREE.CanvasTexture {
+    if (this.glassTex) {
+      return this.glassTex;
     }
-    if (xs[xs.length - 1] !== W) {
-      xs.push(W);
-    }
-    for (const x of xs) {
-      addPost(x, 0);
-      addPost(x, H);
-    }
-    for (let z = step; z < H; z += step) {
-      addPost(0, z);
-      addPost(W, z);
+    const S = 256;
+    const c = document.createElement('canvas');
+    c.width = S;
+    c.height = S;
+    const ctx = c.getContext('2d')!;
+    ctx.clearRect(0, 0, S, S);
+    // Faint frosted panes so the glass reads even away from the cracks.
+    ctx.fillStyle = 'rgba(200, 228, 248, 0.05)';
+    ctx.fillRect(0, 0, S, S);
+    for (let i = 0; i < 5; i++) {
+      ctx.fillStyle = `rgba(220, 240, 255, ${0.02 + Math.random() * 0.03})`;
+      const w = 40 + Math.random() * 120;
+      const h = 40 + Math.random() * 120;
+      ctx.fillRect(Math.random() * S, Math.random() * S, w, h);
     }
 
-    this.boundsGroup = g;
-    this.scene.add(g);
+    const impacts = [
+      { x: S * 0.28, y: S * 0.42 },
+      { x: S * 0.68, y: S * 0.3 },
+      { x: S * 0.52, y: S * 0.72 },
+    ];
+    for (const imp of impacts) {
+      const spokes = 8 + Math.floor(Math.random() * 5);
+      const angs: number[] = [];
+      for (let k = 0; k < spokes; k++) {
+        angs.push((k / spokes) * Math.PI * 2 + Math.random() * 0.3);
+      }
+      // Radial cracks streaking out from the impact, thinning as they go.
+      for (const a of angs) {
+        const len = 40 + Math.random() * 90;
+        let x = imp.x;
+        let y = imp.y;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        const segs = 4;
+        for (let s = 1; s <= segs; s++) {
+          const jitter = (Math.random() - 0.5) * 0.25;
+          x += Math.cos(a + jitter) * (len / segs);
+          y += Math.sin(a + jitter) * (len / segs);
+          ctx.lineTo(x, y);
+        }
+        ctx.strokeStyle = `rgba(255, 255, 255, ${0.25 + Math.random() * 0.35})`;
+        ctx.lineWidth = 0.6 + Math.random() * 1.2;
+        ctx.stroke();
+      }
+      // Concentric shard rings linking neighbouring spokes into glass fragments.
+      for (let r = 12; r < 90; r += 14 + Math.random() * 12) {
+        ctx.beginPath();
+        for (let k = 0; k <= spokes; k++) {
+          const a = angs[k % spokes];
+          const rr = r * (0.8 + Math.random() * 0.4);
+          const x = imp.x + Math.cos(a) * rr;
+          const y = imp.y + Math.sin(a) * rr;
+          if (k === 0) {
+            ctx.moveTo(x, y);
+          } else {
+            ctx.lineTo(x, y);
+          }
+        }
+        ctx.strokeStyle = `rgba(230, 246, 255, ${0.12 + Math.random() * 0.2})`;
+        ctx.lineWidth = 0.5 + Math.random() * 0.8;
+        ctx.stroke();
+      }
+      // A bright pinch of highlight at the impact core.
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+      ctx.beginPath();
+      ctx.arc(imp.x, imp.y, 1.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    const tex = new THREE.CanvasTexture(c);
+    tex.anisotropy = 4;
+    this.glassTex = tex;
+    return tex;
+  }
+
+  // Reshape the wake ribbon along the player's recent path and fade it in/out
+  // with speed. Called every frame from update().
+  private updateWake(dt: number, boatPos: THREE.Vector3, headRad: number, t: number): void {
+    if (!this.wake || !this.wakeGeo) {
+      return;
+    }
+    const mat = this.wake.material as THREE.MeshBasicMaterial;
+    // Stern point: a little behind the hull centre along its heading.
+    const fx = Math.cos(headRad);
+    const fz = Math.sin(headRad);
+    const sternX = boatPos.x - fx * 1.1;
+    const sternZ = boatPos.z - fz * 1.1;
+
+    const trail = this.wakeTrail;
+    if (trail.length === 0) {
+      for (let i = 0; i < this.WAKE_POINTS; i++) {
+        trail.push({ x: sternX, y: sternZ });
+      }
+    }
+    const head = trail[trail.length - 1];
+    const moved = Math.hypot(sternX - head.x, sternZ - head.y);
+    // Smooth the hull speed (units/sec) that drives foam opacity.
+    const inst = dt > 0 ? moved / dt : 0;
+    this.wakeSpeed += (inst - this.wakeSpeed) * (1 - Math.exp(-6 * dt));
+    // Drop a new trail point once the stern has moved far enough, so the ribbon
+    // keeps a roughly even spacing regardless of frame rate.
+    if (moved > 0.35) {
+      trail.push({ x: sternX, y: sternZ });
+      while (trail.length > this.WAKE_POINTS) {
+        trail.shift();
+      }
+    } else {
+      head.x = sternX;
+      head.y = sternZ;
+    }
+
+    const P = this.WAKE_POINTS;
+    const pos = this.wakeGeo.attributes['position'].array as Float32Array;
+    for (let i = 0; i < P; i++) {
+      // Map trail (oldest->newest) onto rows, padding the tail if it is short.
+      const ti = trail.length - P + i;
+      const cur = trail[ti >= 0 ? ti : 0];
+      const nxt = trail[Math.min(trail.length - 1, (ti >= 0 ? ti : 0) + 1)];
+      let dx = nxt.x - cur.x;
+      let dz = nxt.y - cur.y;
+      const dl = Math.hypot(dx, dz) || 1;
+      dx /= dl;
+      dz /= dl;
+      // Perpendicular to the local path direction (on the water plane).
+      const px = -dz;
+      const pz = dx;
+      const v = i / (P - 1); // 0 tail, 1 boat
+      // Wakes are narrow at the transom and fan out astern; taper accordingly.
+      const halfW = 0.5 + (1 - v) * 2.6;
+      const cx = cur.x;
+      const cz = cur.y;
+      const y = this.waveHeight(cx, cz, t) + 0.07;
+      const a = i * 2 * 3;
+      const b = (i * 2 + 1) * 3;
+      pos[a] = cx + px * halfW;
+      pos[a + 1] = y;
+      pos[a + 2] = cz + pz * halfW;
+      pos[b] = cx - px * halfW;
+      pos[b + 1] = y;
+      pos[b + 2] = cz - pz * halfW;
+    }
+    this.wakeGeo.attributes['position'].needsUpdate = true;
+    this.wakeGeo.computeVertexNormals();
+    // Fade the foam in with speed; invisible when nearly stopped.
+    const target = Math.max(0, Math.min(0.9, (this.wakeSpeed - 0.4) / 3.2));
+    mat.opacity += (target - mat.opacity) * (1 - Math.exp(-5 * dt));
   }
 
   // A field of short line "streaks" drifting downwind around the player so the
@@ -1687,6 +1990,10 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       pos.needsUpdate = true;
       this.waterGeo.computeVertexNormals();
     }
+    // Keep the sky dome centred on the player so the horizon ring never drifts.
+    if (this.sky) {
+      this.sky.position.set(p.x, 0, p.y);
+    }
 
     // Third-person chase camera: sit just astern of the player and above the
     // deck, turning WITH the boat's heading (like the skipper's own view), so
@@ -1708,6 +2015,9 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
 
     // Drift the wind streaks downwind around the player.
     this.updateWindStreaks(dt, p, t);
+
+    // Trail the foam wake behind the player along its recent path.
+    this.updateWake(dt, boatPos, h, t);
 
     // Ease the camera azimuth toward the boat's heading so it trails the turn
     // with a gentle lag. Frame-rate independent exponential smoothing, resolving
