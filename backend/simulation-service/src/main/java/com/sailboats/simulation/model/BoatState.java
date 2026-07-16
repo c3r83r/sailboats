@@ -29,8 +29,10 @@ public class BoatState {
     private int deaths;
     // AI boat flag: true for server-controlled bots, false for human players.
     private boolean bot;
-    // True once a human has fired a shot; bots only return fire on aggressors.
-    private boolean hasFired;
+    // True once a human has actually HIT this bot with cannon fire; bots stay
+    // peaceful until struck this way (merely firing at/missing them never
+    // provokes retaliation).
+    private boolean provoked;
     // Heel angle in degrees (signed: + = leaning to starboard, - = to port),
     // driven by the lateral rig force. Integrated smoothly each tick.
     private double heel;

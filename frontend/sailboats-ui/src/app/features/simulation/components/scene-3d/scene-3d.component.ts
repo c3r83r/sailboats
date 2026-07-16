@@ -928,6 +928,62 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
 
     // Guard rails: stanchions, lifelines and bow/stern pulpits in stainless.
     grp.add(this.makeRails(beam, deckY, xBow, xStern));
+    // Cannons: bow/stern chasers plus broadside guns, mirroring the fire()
+    // sides used server-side (bow, stern, port, starboard).
+    grp.add(this.makeCannons(beam, deckY, xBow, xStern));
+
+    return grp;
+  }
+
+  // Six cannons matching the fire() sides used server-side: a single bow and
+  // stern chaser plus two broadside guns per side, mounted on small wooden
+  // carriages with their barrels poking out past the rail.
+  private makeCannons(beam: (t: number) => number, deckY: (t: number) => number, xBow: number, xStern: number): THREE.Group {
+    const grp = new THREE.Group();
+
+    const barrelMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#2b2b2e'), roughness: 0.5, metalness: 0.65 });
+    const carriageMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#5c3a21'), roughness: 0.85 });
+    this.sharedMat.push(barrelMat, carriageMat);
+
+    const barrelLen = 0.34;
+    // Pivot at the breech end (origin) so the muzzle end pokes outward once rotated.
+    const barrelGeo = new THREE.CylinderGeometry(0.028, 0.038, barrelLen, 8);
+    barrelGeo.translate(0, barrelLen / 2, 0);
+    this.sharedGeo.push(barrelGeo);
+    const carriageGeo = new THREE.BoxGeometry(0.16, 0.09, 0.13);
+    this.sharedGeo.push(carriageGeo);
+
+    // A broadside gun: barrel points outward along local Z (port +z / stbd -z).
+    const makeBroadside = (t: number, side: 1 | -1): THREE.Group => {
+      const gun = new THREE.Group();
+      gun.add(new THREE.Mesh(carriageGeo, carriageMat));
+      const barrel = new THREE.Mesh(barrelGeo, barrelMat);
+      barrel.rotation.x = side > 0 ? Math.PI / 2 : -Math.PI / 2;
+      barrel.position.y = 0.02;
+      gun.add(barrel);
+      const x = xStern + (xBow - xStern) * t;
+      gun.position.set(x, deckY(t) + 0.08, side * (beam(t) - 0.1));
+      return gun;
+    };
+    // A chase gun: barrel points forward (bow, +x) or aft (stern, -x).
+    const makeChaser = (atBow: boolean): THREE.Group => {
+      const gun = new THREE.Group();
+      gun.add(new THREE.Mesh(carriageGeo, carriageMat));
+      const barrel = new THREE.Mesh(barrelGeo, barrelMat);
+      barrel.rotation.z = atBow ? -Math.PI / 2 : Math.PI / 2;
+      barrel.position.y = 0.02;
+      gun.add(barrel);
+      const t = atBow ? 0.94 : 0.06;
+      gun.position.set(atBow ? xBow - 0.18 : xStern + 0.16, deckY(t) + 0.08, 0);
+      return gun;
+    };
+
+    for (const t of [0.32, 0.62]) {
+      grp.add(makeBroadside(t, 1));
+      grp.add(makeBroadside(t, -1));
+    }
+    grp.add(makeChaser(true));
+    grp.add(makeChaser(false));
 
     return grp;
   }
