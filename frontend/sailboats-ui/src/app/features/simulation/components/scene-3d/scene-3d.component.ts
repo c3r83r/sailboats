@@ -279,16 +279,17 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
   // and a cockpit — so it reads as a real yacht rather than a plank.
   private makeHull(): THREE.Group {
     const grp = new THREE.Group();
-    const nSt = 16; // stations along the length
+    const nSt = 18; // stations along the length
     const nSec = 13; // points across each U-shaped section
-    const xStern = -0.95;
-    const xBow = 1.18;
+    const xStern = -0.98;
+    const xBow = 1.2;
 
-    // Beam (half-width), deck-edge height (sheer) and bottom (rocker) vs length.
-    const beamCtrl: [number, number][] = [[0, 0.28], [0.18, 0.4], [0.42, 0.46], [0.58, 0.46], [0.74, 0.4], [0.9, 0.22], [1, 0.02]];
+    // Antila-33-style cruiser: beam carried well aft (wide stern), moderate
+    // freeboard and a nearly plumb bow.
+    const beamCtrl: [number, number][] = [[0, 0.4], [0.12, 0.44], [0.35, 0.48], [0.55, 0.485], [0.72, 0.46], [0.86, 0.34], [0.95, 0.16], [1, 0.03]];
     const beam = (t: number) => this.profile(beamCtrl, t);
-    const deckY = (t: number) => 0.4 + 0.2 * Math.pow(t, 1.7) + 0.06 * Math.pow(1 - t, 2.2);
-    const bottomY = (t: number) => -0.34 * Math.sin(Math.PI * Math.min(1, Math.max(0, t * 0.84 + 0.08)));
+    const deckY = (t: number) => 0.46 + 0.16 * Math.pow(t, 1.8) + 0.05 * Math.pow(1 - t, 2.2);
+    const bottomY = (t: number) => -0.36 * Math.sin(Math.PI * Math.min(1, Math.max(0, t * 0.82 + 0.1)));
 
     const rings: THREE.Vector3[][] = [];
     for (let i = 0; i < nSt; i++) {
@@ -332,11 +333,11 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     shellGeo.setAttribute('position', new THREE.Float32BufferAttribute(shell, 3));
     shellGeo.computeVertexNormals();
     this.sharedGeo.push(shellGeo);
-    const hullMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#eceae2'), roughness: 0.45, metalness: 0.05, side: THREE.DoubleSide });
+    const hullMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#f2f1ec'), roughness: 0.35, metalness: 0.05, side: THREE.DoubleSide });
     this.sharedMat.push(hullMat);
     grp.add(new THREE.Mesh(shellGeo, hullMat));
 
-    // Deck: teak surface spanning the port and starboard deck edges.
+    // Deck: pale non-skid deck spanning the port and starboard deck edges.
     const deck: number[] = [];
     for (let i = 0; i < nSt - 1; i++) {
       const p0 = rings[i][0];
@@ -350,27 +351,135 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     deckGeo.setAttribute('position', new THREE.Float32BufferAttribute(deck, 3));
     deckGeo.computeVertexNormals();
     this.sharedGeo.push(deckGeo);
-    const deckMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#b98a52'), roughness: 0.85 });
+    const deckMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#d8d2c4'), roughness: 0.92 });
     this.sharedMat.push(deckMat);
     grp.add(new THREE.Mesh(deckGeo, deckMat));
 
-    // Coachroof (cabin trunk): a low rounded box forward of the cockpit.
-    const cabinGeo = new THREE.BoxGeometry(0.85, 0.2, 0.55, 1, 1, 1);
-    this.sharedGeo.push(cabinGeo);
-    const cabinMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#f2f0ea'), roughness: 0.55 });
+    // Toe rail / rubbing strake: a dark tube following each deck edge — reads as
+    // the classic dark sheer stripe and sharpens the hull-to-deck join.
+    const railMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#25303c'), roughness: 0.5 });
+    this.sharedMat.push(railMat);
+    for (const side of [0, nSec - 1]) {
+      const pts = rings.map((r) => r[side].clone());
+      const curve = new THREE.CatmullRomCurve3(pts);
+      const tube = new THREE.TubeGeometry(curve, 24, 0.022, 6, false);
+      this.sharedGeo.push(tube);
+      grp.add(new THREE.Mesh(tube, railMat));
+    }
+
+    // Coachroof (nadbudówka): a long, low cabin with rounded corners, extruded
+    // from a plan-view rounded rectangle so it looks moulded, not a plain box.
+    const cabW = 0.28; // half width
+    const cabFront = 0.92;
+    const cabAft = -0.28;
+    const cshape = new THREE.Shape();
+    const rr = 0.16;
+    cshape.moveTo(cabAft, -cabW);
+    cshape.lineTo(cabFront - rr, -cabW);
+    cshape.quadraticCurveTo(cabFront, -cabW, cabFront, -cabW + rr);
+    cshape.lineTo(cabFront, cabW - rr);
+    cshape.quadraticCurveTo(cabFront, cabW, cabFront - rr, cabW);
+    cshape.lineTo(cabAft, cabW);
+    cshape.closePath();
+    const cabGeo = new THREE.ExtrudeGeometry(cshape, { depth: 0.2, bevelEnabled: true, bevelThickness: 0.05, bevelSize: 0.04, bevelSegments: 2 });
+    cabGeo.rotateX(-Math.PI / 2);
+    this.sharedGeo.push(cabGeo);
+    const cabinMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#f4f3ee'), roughness: 0.5 });
     this.sharedMat.push(cabinMat);
-    const cabin = new THREE.Mesh(cabinGeo, cabinMat);
-    cabin.position.set(0.5, deckY(0.62) + 0.09, 0);
+    const cabin = new THREE.Mesh(cabGeo, cabinMat);
+    const cabinBaseY = deckY(0.6) + 0.02;
+    cabin.position.set(0.1, cabinBaseY, 0);
     grp.add(cabin);
 
-    // Cockpit sole: a small recessed dark panel aft of the cabin.
-    const cockGeo = new THREE.BoxGeometry(0.6, 0.06, 0.5);
+    // Window band: a dark strip wrapping the cabin sides (tinted glazing).
+    const winGeo = new THREE.BoxGeometry(1.02, 0.1, cabW * 2 + 0.06);
+    this.sharedGeo.push(winGeo);
+    const winMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#10141a'), roughness: 0.25, metalness: 0.3 });
+    this.sharedMat.push(winMat);
+    const windows = new THREE.Mesh(winGeo, winMat);
+    windows.position.set(0.28, cabinBaseY + 0.16, 0);
+    grp.add(windows);
+
+    // Companionway hatch (dark opening at the aft end of the cabin).
+    const hatchGeo = new THREE.BoxGeometry(0.22, 0.16, 0.34);
+    this.sharedGeo.push(hatchGeo);
+    const hatch = new THREE.Mesh(hatchGeo, winMat);
+    hatch.position.set(-0.22, cabinBaseY + 0.14, 0);
+    grp.add(hatch);
+
+    // Cockpit sole: a recessed dark panel aft of the cabin.
+    const cockGeo = new THREE.BoxGeometry(0.62, 0.06, 0.56);
     this.sharedGeo.push(cockGeo);
-    const cockMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#3c2c16'), roughness: 0.9 });
+    const cockMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#5a4a34'), roughness: 0.9 });
     this.sharedMat.push(cockMat);
     const cockpit = new THREE.Mesh(cockGeo, cockMat);
-    cockpit.position.set(-0.4, deckY(0.28) - 0.04, 0);
+    cockpit.position.set(-0.55, deckY(0.22) - 0.03, 0);
     grp.add(cockpit);
+
+    // Guard rails: stanchions, lifelines and bow/stern pulpits in stainless.
+    grp.add(this.makeRails(beam, deckY, xBow, xStern));
+
+    return grp;
+  }
+
+  // Stainless guard rails around the deck: stanchions carrying a lifeline wire,
+  // closed by a bow pulpit and a stern pushpit.
+  private makeRails(beam: (t: number) => number, deckY: (t: number) => number, xBow: number, xStern: number): THREE.Group {
+    const grp = new THREE.Group();
+    const metal = new THREE.MeshStandardMaterial({ color: new THREE.Color('#c6ccd2'), roughness: 0.3, metalness: 0.75 });
+    this.sharedMat.push(metal);
+    const wireMat = new THREE.LineBasicMaterial({ color: 0xaab2ba, transparent: true, opacity: 0.85 });
+    this.sharedMat.push(wireMat);
+
+    const stanchionH = 0.22;
+    const ts = [0.24, 0.42, 0.6, 0.78];
+    const stanchGeo = new THREE.CylinderGeometry(0.014, 0.016, stanchionH, 6);
+    this.sharedGeo.push(stanchGeo);
+
+    for (const sign of [1, -1]) {
+      const tops: THREE.Vector3[] = [];
+      for (const t of ts) {
+        const x = xStern + (xBow - xStern) * t;
+        const z = sign * (beam(t) - 0.02);
+        const dy = deckY(t);
+        const post = new THREE.Mesh(stanchGeo, metal);
+        post.position.set(x, dy + stanchionH / 2, z);
+        grp.add(post);
+        tops.push(new THREE.Vector3(x, dy + stanchionH, z));
+      }
+      // Lifeline wire threading the stanchion tops, run forward to the stem and
+      // aft to the transom corner.
+      const bowTop = new THREE.Vector3(xBow - 0.02, deckY(0.98) + stanchionH, sign * 0.06);
+      const sternTop = new THREE.Vector3(xStern + 0.02, deckY(0.02) + stanchionH, sign * (beam(0.02) - 0.03));
+      const line = [sternTop, ...tops, bowTop];
+      const lineGeo = new THREE.BufferGeometry().setFromPoints(line);
+      this.sharedGeo.push(lineGeo);
+      grp.add(new THREE.Line(lineGeo, wireMat));
+    }
+
+    // Bow pulpit: a stainless tube arcing around the stem.
+    const bowRail = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(xStern + (xBow - xStern) * ts[3], deckY(ts[3]) + stanchionH, beam(ts[3]) - 0.02),
+      new THREE.Vector3(xBow - 0.02, deckY(0.98) + stanchionH, 0.09),
+      new THREE.Vector3(xBow + 0.06, deckY(1) + stanchionH * 0.9, 0),
+      new THREE.Vector3(xBow - 0.02, deckY(0.98) + stanchionH, -0.09),
+      new THREE.Vector3(xStern + (xBow - xStern) * ts[3], deckY(ts[3]) + stanchionH, -(beam(ts[3]) - 0.02)),
+    ]);
+    const bowTube = new THREE.TubeGeometry(bowRail, 20, 0.018, 6, false);
+    this.sharedGeo.push(bowTube);
+    grp.add(new THREE.Mesh(bowTube, metal));
+
+    // Stern pushpit: a tube around the transom.
+    const sternRail = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(xStern + (xBow - xStern) * ts[0], deckY(ts[0]) + stanchionH, beam(ts[0]) - 0.02),
+      new THREE.Vector3(xStern + 0.04, deckY(0.02) + stanchionH, beam(0.02) - 0.04),
+      new THREE.Vector3(xStern - 0.02, deckY(0) + stanchionH * 0.9, 0),
+      new THREE.Vector3(xStern + 0.04, deckY(0.02) + stanchionH, -(beam(0.02) - 0.04)),
+      new THREE.Vector3(xStern + (xBow - xStern) * ts[0], deckY(ts[0]) + stanchionH, -(beam(ts[0]) - 0.02)),
+    ]);
+    const sternTube = new THREE.TubeGeometry(sternRail, 20, 0.018, 6, false);
+    this.sharedGeo.push(sternTube);
+    grp.add(new THREE.Mesh(sternTube, metal));
 
     return grp;
   }
