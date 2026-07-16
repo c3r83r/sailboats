@@ -311,7 +311,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
 
     // A long hull, now beamier and lower-freeboard: fine entry at the bow,
     // generous beam carried aft, low topsides.
-    const beamCtrl: [number, number][] = [[0, 0.33], [0.14, 0.39], [0.38, 0.45], [0.56, 0.46], [0.74, 0.43], [0.88, 0.3], [0.97, 0.09], [1, 0.0]];
+    const beamCtrl: [number, number][] = [[0, 0.36], [0.14, 0.43], [0.38, 0.5], [0.56, 0.51], [0.74, 0.48], [0.88, 0.33], [0.97, 0.1], [1, 0.0]];
     const beam = (t: number) => this.profile(beamCtrl, t);
     const deckY = (t: number) => 0.27 + 0.11 * Math.pow(t, 1.8) + 0.03 * Math.pow(1 - t, 2.2);
     // Shallow, rounded canoe body — the real draught comes from the fin keel below.
@@ -820,16 +820,16 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       if (roach) {
         p.x -= roach * Math.sin(Math.PI * v) * u * u;
       }
-      // Aerofoil camber: draft biased ~40% aft of the luff, and tapered near the
-      // head and foot so the sail stays flat where it is attached (keeps the
-      // foot from bulging down through the deck/hull).
+      // Aerofoil camber: draft biased ~40% aft of the luff. Everything is faded
+      // to zero at the head (v -> 1) so the sail converges cleanly to the head
+      // point instead of flaring into a ragged top.
+      const headTaper = 1 - v * v;
       const draft = Math.sin(Math.PI * Math.pow(u, 0.72));
-      const heightTaper = Math.pow(Math.sin(Math.PI * (0.12 + 0.76 * v)), 0.6);
-      const camber = belly * draft * heightTaper;
-      // Leech twists open toward the head (the top falls off to leeward).
-      const twistZ = twist * u * v * v;
+      const camber = belly * draft * headTaper;
+      // Leech twists open toward the head, then closes back to the point.
+      const twistZ = twist * u * v * headTaper;
       // Luffing shiver: a travelling ripple, strongest along the leech.
-      const flap = flutter * Math.sin(u * 7.5 + v * 2.2 + phase * 11) * (0.15 + 0.85 * u * u);
+      const flap = flutter * Math.sin(u * 7.5 + v * 2.2 + phase * 11) * (0.15 + 0.85 * u * u) * headTaper;
       p.z += leewardSign * (camber + twistZ) + flap;
       pos.setXYZ(i, p.x, p.y, p.z);
     }
@@ -919,7 +919,8 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
         if (flag) {
           const fm = flag.material as THREE.MeshStandardMaterial;
           fm.color.setHSL(this.flagHue(boat.boatId) / 360, 0.82, 0.56);
-          flag.rotation.y = ((boat.heading - this.windDirection) * Math.PI) / 180;
+          // Point the burgee downwind (the fly models -x, so add PI).
+          flag.rotation.y = Math.PI + ((boat.heading - this.windDirection) * Math.PI) / 180;
           flag.rotation.z = Math.sin(t * 6 + boat.x) * 0.07; // gentle flutter
         }
       }
@@ -1029,9 +1030,9 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
         // following the heel-based leeward side.
         const jibSide = c && c.jib.side ? c.jib.side : lee;
         // Tack lifted well clear of the foredeck so the sail can never sweep
-        // down through the hull; the luff still rides the forestay.
+        // down through the hull; the luff runs the full forestay to the masthead.
         const tack = new THREE.Vector3(1.3, 0.55, 0);
-        const head = new THREE.Vector3(0.32, 3.3, 0);
+        const head = new THREE.Vector3(0.28, 3.55, 0);
         const jibFoot = 0.72;
         const jibAngle = 0.22 + (1 - jibSheet) * 0.85;
         const fullClew = new THREE.Vector3(
