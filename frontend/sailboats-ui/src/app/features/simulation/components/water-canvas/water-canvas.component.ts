@@ -657,26 +657,22 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
         islandR = Math.max(islandR, Math.hypot(p.x - cx, p.y - cy));
       }
 
-      // The polygon `pts` sits at the waterline; the grassy top is lifted up the
-      // screen by `lift` so the island reads as land rising out of the water,
-      // with a sandy shore showing along its lower, near edge (2.5D).
-      const lift = this.clamp(islandR * 0.2, 5, 18);
-      const topPts = pts.map((p) => ({ x: p.x, y: p.y - lift }));
+      // Top-down mound (matching the 3D view): the land sits flat on the water,
+      // a sandy beach fringe easing into a grassy centre — no lifted cliff.
       // A sandy beach rim slightly wider than the waterline silhouette so land
-      // eases into the water instead of jumping straight to a hard cliff.
+      // eases into the water instead of ending on a hard edge.
       const beachPts = pts.map((p) => ({ x: cx + (p.x - cx) * 1.1, y: cy + (p.y - cy) * 1.1 }));
 
       const waterPath = this.islandPath(pts);
-      const topPath = this.islandPath(topPts);
       const beachPath = this.islandPath(beachPts);
 
-      // Cast shadow: the waterline silhouette dropped toward the scene light so
-      // the land reads as raised above the water.
-      const shOff = Math.max(4, islandR * 0.16);
+      // Cast shadow: the silhouette dropped toward the scene light so the land
+      // reads as sitting just proud of the water.
+      const shOff = Math.max(3, islandR * 0.1);
       const shadowPts = pts.map((p) => ({ x: p.x + this.shadowDir.x * shOff, y: p.y + this.shadowDir.y * shOff }));
       const shadowPath = this.islandPath(shadowPts);
       ctx.save();
-      ctx.fillStyle = 'rgba(3, 14, 24, 0.3)';
+      ctx.fillStyle = 'rgba(3, 14, 24, 0.28)';
       ctx.fill(shadowPath);
       ctx.restore();
 
@@ -697,34 +693,26 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
       ctx.fillStyle = beach;
       ctx.fill(beachPath);
 
-      // Rocky shore band under the lifted grass along the near/lower edge.
-      const wall = ctx.createLinearGradient(cx, cy - lift, cx, cy + lift * 0.6);
-      wall.addColorStop(0, 'rgba(150, 132, 96, 0.4)');
-      wall.addColorStop(0.55, '#a08a5c');
-      wall.addColorStop(1, '#7a6540');
-      ctx.fillStyle = wall;
-      ctx.fill(waterPath);
-
-      // Grassy top surface: warm sandy core easing out to a green fringe.
-      const grad = ctx.createRadialGradient(cx, cy - lift, islandR * 0.08, cx, cy - lift, islandR * 1.05);
+      // Grassy mound: warm sandy shore easing up to a green centre.
+      const grad = ctx.createRadialGradient(cx, cy, islandR * 0.08, cx, cy, islandR * 1.02);
       grad.addColorStop(0, '#b9c47a'); // sun-bleached centre
       grad.addColorStop(0.4, '#86a860'); // grass
       grad.addColorStop(0.78, '#638a4b');
-      grad.addColorStop(1, '#4d7440'); // shaded rim
+      grad.addColorStop(1, '#4d7440'); // shaded shore
       ctx.fillStyle = grad;
-      ctx.fill(topPath);
+      ctx.fill(waterPath);
 
       // Vegetation detail: deterministic grass tufts and little trees clipped to
-      // the grassy top so the surface no longer reads as a flat blob.
+      // the island so the surface no longer reads as a flat blob.
       ctx.save();
-      ctx.clip(topPath);
+      ctx.clip(waterPath);
       const rand = this.mulberry32(idx * 9973 + 17);
       const tufts = Math.round(this.clamp(islandR / 9, 5, 22));
       for (let i = 0; i < tufts; i++) {
         const ang = rand() * Math.PI * 2;
         const rr = Math.sqrt(rand()) * islandR * 0.82;
         const px = cx + Math.cos(ang) * rr;
-        const py = cy - lift + Math.sin(ang) * rr * 0.9;
+        const py = cy + Math.sin(ang) * rr * 0.95;
         const rad = (2 + rand() * 3) * scale;
         // shadow blob then a lighter highlight for a soft tuft of foliage.
         ctx.fillStyle = 'rgba(58, 84, 44, 0.5)';
@@ -742,7 +730,7 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
         const ang = rand() * Math.PI * 2;
         const rr = Math.sqrt(rand()) * islandR * 0.5;
         const px = cx + Math.cos(ang) * rr;
-        const py = cy - lift + Math.sin(ang) * rr * 0.85;
+        const py = cy + Math.sin(ang) * rr * 0.9;
         const th = (7 + rand() * 4) * scale;
         ctx.fillStyle = 'rgba(20, 40, 22, 0.35)';
         ctx.beginPath();
@@ -767,7 +755,7 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
 
       ctx.strokeStyle = 'rgba(58, 82, 46, 0.7)';
       ctx.lineWidth = 1.4 * scale;
-      ctx.stroke(topPath);
+      ctx.stroke(waterPath);
     }
   }
 

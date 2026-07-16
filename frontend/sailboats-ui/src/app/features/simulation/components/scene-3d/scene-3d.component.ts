@@ -110,7 +110,8 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
   private windStreaks?: THREE.LineSegments;
   private windGeo?: THREE.BufferGeometry;
   private windHeads: Float32Array = new Float32Array(0); // xyz per streak, player-relative
-  private readonly WIND_COUNT = 150;
+  private windPhase: Float32Array = new Float32Array(0); // per-streak meander phase + speed jitter
+  private readonly WIND_COUNT = 90;
   private readonly WIND_BOX = 60; // extent (scene units) of the streak field
   private readonly onOrbitKeyDown = (e: KeyboardEvent) => {
     if (e.key === '9') {
@@ -1287,35 +1288,44 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     const n = this.WIND_COUNT;
     const half = this.WIND_BOX / 2;
     this.windHeads = new Float32Array(n * 3);
+    this.windPhase = new Float32Array(n * 2);
     for (let i = 0; i < n; i++) {
       this.windHeads[i * 3] = (Math.random() * 2 - 1) * half;
-      this.windHeads[i * 3 + 1] = 0.4 + Math.random() * 4.6;
+      this.windHeads[i * 3 + 1] = 0.5 + Math.random() * 4.5;
       this.windHeads[i * 3 + 2] = (Math.random() * 2 - 1) * half;
+      this.windPhase[i * 2] = Math.random() * Math.PI * 2; // meander phase
+      this.windPhase[i * 2 + 1] = 0.8 + Math.random() * 0.5; // speed jitter
     }
     this.windGeo = new THREE.BufferGeometry();
     this.windGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 2 * 3), 3));
-    const mat = new THREE.LineBasicMaterial({ color: 0xeaf6ff, transparent: true, opacity: 0.32 });
+    const mat = new THREE.LineBasicMaterial({ color: 0xdfeefc, transparent: true, opacity: 0.16 });
     this.sharedMat.push(mat);
     this.windStreaks = new THREE.LineSegments(this.windGeo, mat);
     this.windStreaks.frustumCulled = false;
     this.scene.add(this.windStreaks);
   }
 
-  private updateWindStreaks(dt: number, p: { x: number; y: number }): void {
+  private updateWindStreaks(dt: number, p: { x: number; y: number }, t: number): void {
     if (!this.windStreaks || !this.windGeo) {
       return;
     }
     const rad = (this.windDirection * Math.PI) / 180;
-    const dx = Math.cos(rad);
-    const dz = Math.sin(rad);
-    const speed = 6 + this.windStrength * 1.6;
-    const streak = 1.2 + this.windStrength * 0.25;
+    // Gentle breeze: slow drift, short streaks. Each gust wanders a little to the
+    // side (a slowly varying heading) so they curl instead of racing dead straight.
+    const speed = 1.6 + this.windStrength * 0.35;
+    const streak = 0.45 + this.windStrength * 0.06;
     const half = this.WIND_BOX / 2;
     const pos = this.windGeo.attributes['position'].array as Float32Array;
     const n = this.WIND_COUNT;
     for (let i = 0; i < n; i++) {
-      let hx = this.windHeads[i * 3] + dx * speed * dt;
-      let hz = this.windHeads[i * 3 + 2] + dz * speed * dt;
+      const phase = this.windPhase[i * 2];
+      const spd = speed * this.windPhase[i * 2 + 1];
+      // Wander the local heading by up to ~0.35 rad off the wind axis.
+      const ang = rad + Math.sin(t * 0.35 + phase) * 0.35;
+      const dx = Math.cos(ang);
+      const dz = Math.sin(ang);
+      let hx = this.windHeads[i * 3] + dx * spd * dt;
+      let hz = this.windHeads[i * 3 + 2] + dz * spd * dt;
       if (hx > half) hx -= this.WIND_BOX;
       else if (hx < -half) hx += this.WIND_BOX;
       if (hz > half) hz -= this.WIND_BOX;
@@ -1381,7 +1391,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     this.orbit += this.orbitDir * this.ORBIT_SPEED * dt;
 
     // Drift the wind streaks downwind around the player.
-    this.updateWindStreaks(dt, p);
+    this.updateWindStreaks(dt, p, t);
 
     // Ease the camera azimuth toward the boat's heading so it trails the turn
     // with a gentle lag. Frame-rate independent exponential smoothing, resolving
