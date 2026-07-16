@@ -18,7 +18,7 @@ export interface BoatState {
   capsized?: boolean;
 }
 
-export type FireSide = 'bow' | 'stern' | 'port' | 'starboard';
+export type FireSide = 'port' | 'starboard';
 
 export type LakeSize = 'SMALL' | 'MEDIUM' | 'LARGE';
 

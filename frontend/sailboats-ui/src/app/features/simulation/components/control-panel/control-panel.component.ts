@@ -558,8 +558,6 @@ export class ControlPanelComponent {
     switch (this.armedSide) {
       case 'port': return '· lewa burta';
       case 'starboard': return '· prawa burta';
-      case 'bow': return '· dziób';
-      case 'stern': return '· rufa';
       default: return '';
     }
   }

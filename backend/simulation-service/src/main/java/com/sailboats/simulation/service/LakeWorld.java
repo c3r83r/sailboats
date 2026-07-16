@@ -275,8 +275,6 @@ public class LakeWorld {
         double by = boat.getY();
 
         switch (side) {
-            case "bow" -> spawn(boat, bx + fx * 0.7, by + fy * 0.7, fx, fy, speed, ttl);
-            case "stern" -> spawn(boat, bx - fx * 0.7, by - fy * 0.7, -fx, -fy, speed, ttl);
             case "starboard" -> {
                 spawn(boat, bx + fx * 0.3 + sx * 0.5, by + fy * 0.3 + sy * 0.5, sx, sy, speed, ttl);
                 spawn(boat, bx - fx * 0.3 + sx * 0.5, by - fy * 0.3 + sy * 0.5, sx, sy, speed, ttl);
@@ -900,15 +898,8 @@ public class LakeWorld {
         }
         double bearing = Math.toDegrees(Math.atan2(target.getY() - bot.getY(), target.getX() - bot.getX()));
         double rel = signedDelta(bearing, bot.getHeading());
-        double a = Math.abs(rel);
-        String side;
-        if (a < 30.0) {
-            side = "bow";
-        } else if (a > 150.0) {
-            side = "stern";
-        } else {
-            side = rel > 0 ? "starboard" : "port";
-        }
+        // Only broadside guns remain, so fire whichever side the target is on.
+        String side = rel > 0 ? "starboard" : "port";
         fire(bot.getBoatId(), side, 0.6 + ThreadLocalRandom.current().nextDouble() * 0.4);
     }
 

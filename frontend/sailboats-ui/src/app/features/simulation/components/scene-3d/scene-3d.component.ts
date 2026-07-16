@@ -159,10 +159,15 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
   private sailTexture?: THREE.CanvasTexture;
   private jibSailTexture?: THREE.CanvasTexture;
 
-  // Manual camera orbit around the boat, driven by the 9 / 0 keys.
+  // Manual camera orbit around the boat, driven by the 9 / 0 keys or the arrows.
   private orbit = 0; // azimuth offset (radians) added to the astern view
   private orbitDir = 0; // -1 / 0 / +1 while a key is held
   private readonly ORBIT_SPEED = 1.8; // radians per second
+  // Vertical (pitch) orbit and zoom radius for the chase camera.
+  private pitchDir = 0; // -1 / 0 / +1 while up/down held
+  private readonly PITCH_SPEED = 1.1; // radians per second
+  private camElev = 0.54; // elevation angle above the boat (radians)
+  private camRadius = 5.83; // distance from the boat (mouse-wheel zoom)
   private lastTime = 0;
 
   // Smoothed chase-camera state so the view eases behind the boat with a slight
@@ -193,16 +198,30 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
   private compassDpr = 1;
   private readonly COMPASS_H = 46;
   private readonly onOrbitKeyDown = (e: KeyboardEvent) => {
-    if (e.key === '9') {
-      this.orbitDir = -1;
-    } else if (e.key === '0') {
-      this.orbitDir = 1;
+    switch (e.key) {
+      case '9': case 'ArrowLeft': this.orbitDir = -1; break;
+      case '0': case 'ArrowRight': this.orbitDir = 1; break;
+      case 'ArrowUp': this.pitchDir = 1; break;
+      case 'ArrowDown': this.pitchDir = -1; break;
+      default: return;
+    }
+    if (e.key.startsWith('Arrow')) {
+      e.preventDefault();
     }
   };
   private readonly onOrbitKeyUp = (e: KeyboardEvent) => {
-    if ((e.key === '9' && this.orbitDir === -1) || (e.key === '0' && this.orbitDir === 1)) {
-      this.orbitDir = 0;
+    switch (e.key) {
+      case '9': case 'ArrowLeft': if (this.orbitDir === -1) this.orbitDir = 0; break;
+      case '0': case 'ArrowRight': if (this.orbitDir === 1) this.orbitDir = 0; break;
+      case 'ArrowUp': if (this.pitchDir === 1) this.pitchDir = 0; break;
+      case 'ArrowDown': if (this.pitchDir === -1) this.pitchDir = 0; break;
     }
+  };
+  // Mouse wheel zooms the chase camera in/out (changes its distance from the boat).
+  private readonly onCanvasWheel = (e: WheelEvent) => {
+    e.preventDefault();
+    const factor = e.deltaY < 0 ? 1 / 1.12 : 1.12;
+    this.camRadius = THREE.MathUtils.clamp(this.camRadius * factor, 2.6, 24);
   };
 
   ngAfterViewInit(): void {
@@ -255,6 +274,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
 
     window.addEventListener('keydown', this.onOrbitKeyDown);
     window.addEventListener('keyup', this.onOrbitKeyUp);
+    this.renderer.domElement.addEventListener('wheel', this.onCanvasWheel, { passive: false });
 
     this.clock.start();
     const loop = () => {
@@ -270,6 +290,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     }
     window.removeEventListener('keydown', this.onOrbitKeyDown);
     window.removeEventListener('keyup', this.onOrbitKeyUp);
+    this.renderer?.domElement.removeEventListener('wheel', this.onCanvasWheel);
     this.resizeObserver?.disconnect();
     this.sharedGeo.forEach((g) => g.dispose());
     this.sharedMat.forEach((m) => m.dispose());
@@ -1054,17 +1075,14 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       grp.add(gun);
     };
 
-    // Broadside guns: seated inboard so the barrel lies across the side deck and
-    // only its muzzle clears the rail. port (+z, aim +z) / starboard (-z, aim -z).
+    // Broadside guns only: two per side, seated inboard so the barrel lies across
+    // the side deck and only its muzzle clears the rail. port (+z) / starboard (-z).
     for (const t of [0.34, 0.6]) {
       const x = xStern + (xBow - xStern) * t;
       const inboard = beam(t) - (barrelLen - protrude);
       buildGun(x, inboard, deckY(t), -Math.PI / 2);
       buildGun(x, -inboard, deckY(t), Math.PI / 2);
     }
-    // Bow chaser (aim +x) and stern chaser (aim -x), muzzles just past the ends.
-    buildGun(xBow - (barrelLen - protrude), 0, deckY(0.9), 0);
-    buildGun(xStern + (barrelLen - protrude), 0, deckY(0.08), Math.PI);
 
     grp.userData['cannonPivots'] = pivots;
     return grp;
@@ -2516,8 +2534,10 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     const playerDisp = this.playerBoatId ? this.boatDisplay.get(this.playerBoatId) : undefined;
     const h = playerDisp ? playerDisp.headRad : ((player ? player.heading : 90) * Math.PI) / 180;
     const boatPos = boatMesh ? boatMesh.position : new THREE.Vector3(p.x, this.waveHeight(p.x, p.y, t), p.y);
-    const camDist = 5.0;
-    const camHeight = 3.0;
+    // Wheel zoom sets the camera distance; the up/down arrows tilt its elevation.
+    this.camElev = THREE.MathUtils.clamp(this.camElev + this.pitchDir * this.PITCH_SPEED * dt, 0.12, 1.4);
+    const camDist = this.camRadius * Math.cos(this.camElev);
+    const camHeight = this.camRadius * Math.sin(this.camElev);
 
     // Advance the manual orbit (9 / 0 keys) using real elapsed time.
     this.orbit += this.orbitDir * this.ORBIT_SPEED * dt;
