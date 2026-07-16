@@ -258,7 +258,7 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
           [armedSide]="chargingSide"
           [windDirection]="(wind$ | async)?.direction ?? 0"
           [windStrength]="(wind$ | async)?.strength ?? 0"
-          [heel]="heel">
+          [heel]="playerHeelDeg">
         </app-control-panel>
       </section>
     </main>
@@ -1060,7 +1060,8 @@ export class AppComponent implements OnInit, OnDestroy {
   mainState: SailVisualState = 'down';
   jibState: SailVisualState = 'down';
   pointOfSail: PointOfSail = 'irons';
-  heel = 0; // -1..+1, positive = lean to starboard (player frame)
+  heel = 0; // -1..+1, positive = lean to starboard (player frame) — drives 3D/2D visuals
+  playerHeelDeg = 0; // server-computed heel angle in degrees (signed) — drives the control deck readout
   autoTrim = false; // T key: auto-trim assist keeps both sheets at the optimum
   playerHealth = 100;
 
@@ -1169,6 +1170,7 @@ export class AppComponent implements OnInit, OnDestroy {
         this.playerHeading = player.heading;
         this.playerSpeed = player.speed;
         this.playerHealth = player.health ?? 100;
+        this.playerHeelDeg = player.heel ?? 0;
       });
 
     // Continuous helm loop: ramps the rudder, auto-centers it, trims sails and

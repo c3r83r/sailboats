@@ -114,8 +114,8 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
   private readonly WIND_COUNT = 130;
   private readonly WIND_BOX = 60; // extent (scene units) of the streak field
 
-  // Top compass strip (a 2D overlay canvas) marking bearings to boats (red),
-  // islands (yellow) and buoys (green) relative to the player's heading.
+  // Top compass strip (a 2D overlay canvas) marking bearings to boats (red)
+  // and buoys (green) relative to the player's heading.
   private compassCanvas?: HTMLCanvasElement;
   private compassCtx: CanvasRenderingContext2D | null = null;
   private compassW = 0;
@@ -1037,26 +1037,38 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     band.position.y = 0.55;
     grp.add(band);
 
-    // Topmark pole and a white "+" cross that reads from any angle.
-    const poleGeo = new THREE.CylinderGeometry(0.035, 0.035, 0.5, 6);
-    this.sharedGeo.push(poleGeo);
-    const pole = new THREE.Mesh(poleGeo, whiteMat);
-    pole.position.y = 1.12;
-    grp.add(pole);
-    const barVGeo = new THREE.BoxGeometry(0.12, 0.44, 0.12);
-    const barHGeo = new THREE.BoxGeometry(0.44, 0.12, 0.12);
+    // White "+" painted flat on the buoy's own surface (not floating above it):
+    // one cross embossed on the dome top, plus a cross on each of the four
+    // sides of the cylindrical body so it reads from any viewing angle.
+    const barVGeo = new THREE.BoxGeometry(0.1, 0.34, 0.05);
+    const barHGeo = new THREE.BoxGeometry(0.34, 0.1, 0.05);
     this.sharedGeo.push(barVGeo, barHGeo);
-    const barV = new THREE.Mesh(barVGeo, whiteMat);
-    barV.position.y = 1.5;
-    grp.add(barV);
-    const barH = new THREE.Mesh(barHGeo, whiteMat);
-    barH.position.y = 1.5;
-    grp.add(barH);
-    // A second cross rotated 90° so the plus is visible from the sides too.
-    const barD = new THREE.Mesh(barHGeo, whiteMat);
-    barD.position.y = 1.5;
-    barD.rotation.y = Math.PI / 2;
-    grp.add(barD);
+    const addSideCross = (angle: number) => {
+      const g = new THREE.Group();
+      const barV = new THREE.Mesh(barVGeo, whiteMat);
+      const barH = new THREE.Mesh(barHGeo, whiteMat);
+      g.add(barV, barH);
+      g.position.set(0, 0.42, 0);
+      g.rotation.y = angle;
+      g.translateZ(0.42);
+      grp.add(g);
+    };
+    addSideCross(0);
+    addSideCross(Math.PI / 2);
+    addSideCross(Math.PI);
+    addSideCross(-Math.PI / 2);
+
+    // Flat cross on top of the dome so it also reads from a bird's-eye view.
+    const topVGeo = new THREE.BoxGeometry(0.09, 0.05, 0.3);
+    const topHGeo = new THREE.BoxGeometry(0.3, 0.05, 0.09);
+    this.sharedGeo.push(topVGeo, topHGeo);
+    const topV = new THREE.Mesh(topVGeo, whiteMat);
+    topV.position.y = 1.13;
+    grp.add(topV);
+    const topH = new THREE.Mesh(topHGeo, whiteMat);
+    topH.position.y = 1.13;
+    grp.add(topH);
+
 
     return grp;
   }
@@ -1152,19 +1164,6 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       ctx.fill();
     };
 
-    // Islands (yellow) — plotted at their centroid.
-    for (const island of this.islands) {
-      if (!island.points || island.points.length < 3) {
-        continue;
-      }
-      let ix = 0;
-      let iy = 0;
-      for (const p of island.points) {
-        ix += p.x;
-        iy += p.y;
-      }
-      plot(ix / island.points.length, iy / island.points.length, '#ffd24a', 4);
-    }
     // Buoys (green).
     for (const buoy of this.buoys) {
       plot(buoy.x, buoy.y, '#3ee07f', 4);
