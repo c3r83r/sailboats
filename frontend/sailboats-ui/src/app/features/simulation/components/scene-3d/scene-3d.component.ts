@@ -92,6 +92,24 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
   private sharedGeo: THREE.BufferGeometry[] = [];
   private sharedMat: THREE.Material[] = [];
 
+  // Manual camera orbit around the boat, driven by the 9 / 0 keys.
+  private orbit = 0; // azimuth offset (radians) added to the astern view
+  private orbitDir = 0; // -1 / 0 / +1 while a key is held
+  private readonly ORBIT_SPEED = 1.8; // radians per second
+  private lastTime = 0;
+  private readonly onOrbitKeyDown = (e: KeyboardEvent) => {
+    if (e.key === '9') {
+      this.orbitDir = -1;
+    } else if (e.key === '0') {
+      this.orbitDir = 1;
+    }
+  };
+  private readonly onOrbitKeyUp = (e: KeyboardEvent) => {
+    if ((e.key === '9' && this.orbitDir === -1) || (e.key === '0' && this.orbitDir === 1)) {
+      this.orbitDir = 0;
+    }
+  };
+
   ngAfterViewInit(): void {
     const host = this.hostRef?.nativeElement;
     if (!host) {
@@ -123,6 +141,9 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     this.resizeObserver.observe(host);
     this.resize();
 
+    window.addEventListener('keydown', this.onOrbitKeyDown);
+    window.addEventListener('keyup', this.onOrbitKeyUp);
+
     this.clock.start();
     const loop = () => {
       this.update();
@@ -135,6 +156,8 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     if (this.frameId !== null) {
       cancelAnimationFrame(this.frameId);
     }
+    window.removeEventListener('keydown', this.onOrbitKeyDown);
+    window.removeEventListener('keyup', this.onOrbitKeyUp);
     this.resizeObserver?.disconnect();
     this.sharedGeo.forEach((g) => g.dispose());
     this.sharedMat.forEach((m) => m.dispose());
@@ -926,15 +949,24 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     const player = this.playerBoatId ? this.boats.find((b) => b.boatId === this.playerBoatId) : undefined;
     const boatMesh = this.playerBoatId ? this.boatMeshes.get(this.playerBoatId) : undefined;
     const h = ((player ? player.heading : 90) * Math.PI) / 180;
-    const fwd = new THREE.Vector3(Math.cos(h), 0, Math.sin(h));
     const boatPos = boatMesh ? boatMesh.position : new THREE.Vector3(p.x, this.waveHeight(p.x, p.y, t), p.y);
     const camTarget = new THREE.Vector3(boatPos.x, boatPos.y + 1.3, boatPos.z);
     const camDist = 8.5;
     const camHeight = 4.4;
+
+    // Advance the manual orbit (9 / 0 keys) using real elapsed time.
+    const dt = this.lastTime ? Math.min(0.05, t - this.lastTime) : 0.016;
+    this.lastTime = t;
+    this.orbit += this.orbitDir * this.ORBIT_SPEED * dt;
+
+    // View direction from the boat: astern by default (heading + PI), swung
+    // around by the orbit angle so 9 / 0 rotate the camera about the ship.
+    const viewAng = h + Math.PI + this.orbit;
+    const off = new THREE.Vector3(Math.cos(viewAng), 0, Math.sin(viewAng));
     const desired = new THREE.Vector3(
-      boatPos.x - fwd.x * camDist,
+      boatPos.x + off.x * camDist,
       boatPos.y + camHeight,
-      boatPos.z - fwd.z * camDist,
+      boatPos.z + off.z * camDist,
     );
     // Smooth only the orbit position; lookAt always re-centres the boat.
     this.camera.position.lerp(desired, 0.3);
