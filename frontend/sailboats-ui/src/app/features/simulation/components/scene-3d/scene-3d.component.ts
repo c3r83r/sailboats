@@ -312,7 +312,8 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     const beamCtrl: [number, number][] = [[0, 0.4], [0.12, 0.44], [0.35, 0.48], [0.55, 0.485], [0.72, 0.46], [0.86, 0.34], [0.95, 0.16], [1, 0.03]];
     const beam = (t: number) => this.profile(beamCtrl, t);
     const deckY = (t: number) => 0.46 + 0.16 * Math.pow(t, 1.8) + 0.05 * Math.pow(1 - t, 2.2);
-    const bottomY = (t: number) => -0.36 * Math.sin(Math.PI * Math.min(1, Math.max(0, t * 0.82 + 0.1)));
+    // Shallow, rounded canoe body — the real draught comes from the fin keel below.
+    const bottomY = (t: number) => -0.16 * Math.sin(Math.PI * Math.min(1, Math.max(0, t * 0.82 + 0.12)));
 
     const rings: THREE.Vector3[][] = [];
     for (let i = 0; i < nSt; i++) {
@@ -325,7 +326,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       for (let j = 0; j < nSec; j++) {
         const s = j / (nSec - 1); // 0 = port deck edge, 0.5 = keel, 1 = stbd deck edge
         const z = hb * Math.cos(Math.PI * s);
-        const y = dy - (dy - by) * Math.pow(Math.sin(Math.PI * s), 0.85);
+        const y = dy - (dy - by) * Math.pow(Math.sin(Math.PI * s), 1.25);
         ring.push(new THREE.Vector3(x, y, z));
       }
       rings.push(ring);
@@ -359,6 +360,29 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     const hullMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#f2f1ec'), roughness: 0.35, metalness: 0.05, side: THREE.DoubleSide });
     this.sharedMat.push(hullMat);
     grp.add(new THREE.Mesh(shellGeo, hullMat));
+
+    // Fin keel with a ballast bulb and a spade rudder — a modern cruiser
+    // underbody, so the hull no longer shows a crude deep V.
+    const keelMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#2b313a'), roughness: 0.5, metalness: 0.25 });
+    this.sharedMat.push(keelMat);
+    const finGeo = new THREE.BoxGeometry(0.4, 0.62, 0.055);
+    finGeo.translate(0, -0.31, 0);
+    this.sharedGeo.push(finGeo);
+    const fin = new THREE.Mesh(finGeo, keelMat);
+    fin.position.set(0.22, -0.1, 0);
+    grp.add(fin);
+    const bulbGeo = new THREE.SphereGeometry(0.08, 10, 8);
+    bulbGeo.scale(2.4, 0.85, 1.1);
+    this.sharedGeo.push(bulbGeo);
+    const bulb = new THREE.Mesh(bulbGeo, keelMat);
+    bulb.position.set(0.22, -0.72, 0);
+    grp.add(bulb);
+    const rudGeo = new THREE.BoxGeometry(0.13, 0.44, 0.04);
+    rudGeo.translate(0, -0.22, 0);
+    this.sharedGeo.push(rudGeo);
+    const rudder = new THREE.Mesh(rudGeo, keelMat);
+    rudder.position.set(-0.82, -0.06, 0);
+    grp.add(rudder);
 
     // Deck: pale non-skid deck spanning the port and starboard deck edges.
     const deck: number[] = [];
@@ -517,13 +541,13 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     rig.name = 'rig';
     group.add(rig);
 
-    // Mast.
-    const mastMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#3a2a12'), roughness: 0.8 });
-    const mastGeo = new THREE.CylinderGeometry(0.05, 0.06, 2.3, 8);
+    // Mast: tall and slim.
+    const mastMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#d8dde2'), roughness: 0.45, metalness: 0.4 });
+    const mastGeo = new THREE.CylinderGeometry(0.028, 0.036, 2.75, 10);
     this.sharedGeo.push(mastGeo);
     this.sharedMat.push(mastMat);
     const mast = new THREE.Mesh(mastGeo, mastMat);
-    mast.position.set(0.25, 1.15, 0);
+    mast.position.set(0.25, 1.37, 0);
     rig.add(mast);
 
     // Boom: a spar along the foot of the mainsail, re-aimed every frame.
@@ -554,14 +578,14 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
 
     // Standing rigging (olinowanie stałe): forestay, backstay, cap shrouds and
     // spreaders. Fixed wires that hold the mast up; they heel with the boat.
-    const mastHead = new THREE.Vector3(0.25, 2.25, 0);
-    const hounds = new THREE.Vector3(0.25, 1.7, 0);
+    const mastHead = new THREE.Vector3(0.25, 2.6, 0);
+    const hounds = new THREE.Vector3(0.25, 1.9, 0);
     const bowTack = new THREE.Vector3(1.15, 0.2, 0);
     const stern = new THREE.Vector3(-0.95, 0.36, 0);
     const chainPort = new THREE.Vector3(0.12, 0.34, 0.44);
     const chainStbd = new THREE.Vector3(0.12, 0.34, -0.44);
-    const spreadPort = new THREE.Vector3(0.25, 1.68, 0.28);
-    const spreadStbd = new THREE.Vector3(0.25, 1.68, -0.28);
+    const spreadPort = new THREE.Vector3(0.25, 1.88, 0.28);
+    const spreadStbd = new THREE.Vector3(0.25, 1.88, -0.28);
 
     const wireMat = new THREE.LineBasicMaterial({ color: 0x1a140a, transparent: true, opacity: 0.5 });
     this.sharedMat.push(wireMat);
@@ -584,7 +608,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     spreadGeo.rotateX(Math.PI / 2); // lie across the beam (local Z)
     this.sharedGeo.push(spreadGeo);
     const spreaders = new THREE.Mesh(spreadGeo, spreadMat);
-    spreaders.position.set(0.25, 1.68, 0);
+    spreaders.position.set(0.25, 1.88, 0);
     rig.add(spreaders);
 
     // Roller-furling foil + furled cloth on the forestay: a cylinder along the
@@ -813,30 +837,29 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     if (main) {
       const show = !capsized && mainDeploy > 0.05;
       main.visible = show;
+      // The boom is a fixed spar: it stays on the mast even when the sail is
+      // furled (it just rests near the centreline).
+      const boomY = 0.92;
+      const foot = 1.05;
+      const boomAngle = show ? 0.12 + (1 - mainSheet) * 0.95 : 0.1;
+      const tack = new THREE.Vector3(0.25, boomY, 0);
+      const clew = new THREE.Vector3(
+        0.25 - Math.cos(boomAngle) * foot,
+        boomY,
+        lee * Math.sin(boomAngle) * foot,
+      );
       if (boom) {
-        boom.visible = show;
+        boom.visible = !capsized;
+        this.alignSpar(boom, tack, clew);
       }
       if (show) {
-        // Shorter, higher-cut main: the boom sits well above the deck and the
-        // foot is trimmed so it no longer sweeps low over the stern.
-        const boomY = 0.9;
-        const headY = boomY + 1.35 * (0.6 + 0.4 * mainDeploy); // hoist raises the head
-        const foot = 1.05;
-        const boomAngle = 0.12 + (1 - mainSheet) * 0.95;
-        const tack = new THREE.Vector3(0.25, boomY, 0);
+        // Tall, higher-cut main running well up the taller mast.
+        const headY = boomY + 1.55 * (0.62 + 0.38 * mainDeploy);
         const head = new THREE.Vector3(0.25, headY, 0);
-        const clew = new THREE.Vector3(
-          0.25 - Math.cos(boomAngle) * foot,
-          boomY,
-          lee * Math.sin(boomAngle) * foot,
-        );
         const power = mainDeploy * (0.35 + 0.65 * mainSheet);
         const belly = mainLuff ? 0.05 : 0.34 * power;
         const flutter = mainLuff ? 0.14 * gust : 0.02;
         this.updateSail(main, tack, head, clew, lee, belly, flutter, t);
-        if (boom) {
-          this.alignSpar(boom, tack, clew);
-        }
         // Mainsheet: from the boom clew down to the traveller on the cockpit sole.
         if (mainSheetLine) {
           mainSheetLine.visible = true;
@@ -858,7 +881,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       jib.visible = show;
       if (show) {
         const tack = new THREE.Vector3(1.15, 0.2, 0);
-        const head = new THREE.Vector3(0.28, 2.05, 0); // luff runs the full forestay
+        const head = new THREE.Vector3(0.28, 2.4, 0); // luff runs the full forestay
         const jibFoot = 1.0;
         const jibAngle = 0.2 + (1 - jibSheet) * 0.95;
         const fullClew = new THREE.Vector3(
@@ -881,9 +904,9 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
         jibSheetLine.visible = false;
       }
       if (furl) {
-        // Thin foil when unfurled, a modest roll of cloth when furled away.
+        // Thin foil when unfurled, only a slim roll of cloth when furled away.
         furl.visible = !capsized;
-        const r = 0.015 + 0.055 * (1 - this.clamp01(jibDeploy));
+        const r = 0.012 + 0.03 * (1 - this.clamp01(jibDeploy));
         furl.scale.set(r, 1, r);
       }
     }
