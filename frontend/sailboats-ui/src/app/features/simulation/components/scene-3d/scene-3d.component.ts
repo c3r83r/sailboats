@@ -155,7 +155,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     if (w === 0 || h === 0) {
       return;
     }
-    this.renderer.setSize(w, h, false);
+    this.renderer.setSize(w, h); // updateStyle=true keeps the canvas CSS size in sync with the host
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
   }
@@ -259,36 +259,127 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     }
   }
 
+  // Interpolate a value from [t, value] control points (t ascending, 0..1).
+  private profile(ctrl: [number, number][], t: number): number {
+    if (t <= ctrl[0][0]) return ctrl[0][1];
+    if (t >= ctrl[ctrl.length - 1][0]) return ctrl[ctrl.length - 1][1];
+    for (let i = 0; i < ctrl.length - 1; i++) {
+      const [t0, v0] = ctrl[i];
+      const [t1, v1] = ctrl[i + 1];
+      if (t >= t0 && t <= t1) {
+        const f = (t - t0) / (t1 - t0);
+        return v0 + (v1 - v0) * (f * f * (3 - 2 * f)); // smoothstep
+      }
+    }
+    return ctrl[ctrl.length - 1][1];
+  }
+
+  // A lofted sailboat hull: cross-section rings along the length give a pointed
+  // bow, rounded bilge, sheer line and a transom, plus a teak deck, a coachroof
+  // and a cockpit — so it reads as a real yacht rather than a plank.
+  private makeHull(): THREE.Group {
+    const grp = new THREE.Group();
+    const nSt = 16; // stations along the length
+    const nSec = 13; // points across each U-shaped section
+    const xStern = -0.95;
+    const xBow = 1.18;
+
+    // Beam (half-width), deck-edge height (sheer) and bottom (rocker) vs length.
+    const beamCtrl: [number, number][] = [[0, 0.28], [0.18, 0.4], [0.42, 0.46], [0.58, 0.46], [0.74, 0.4], [0.9, 0.22], [1, 0.02]];
+    const beam = (t: number) => this.profile(beamCtrl, t);
+    const deckY = (t: number) => 0.4 + 0.2 * Math.pow(t, 1.7) + 0.06 * Math.pow(1 - t, 2.2);
+    const bottomY = (t: number) => -0.34 * Math.sin(Math.PI * Math.min(1, Math.max(0, t * 0.84 + 0.08)));
+
+    const rings: THREE.Vector3[][] = [];
+    for (let i = 0; i < nSt; i++) {
+      const t = i / (nSt - 1);
+      const x = xStern + (xBow - xStern) * t;
+      const hb = beam(t);
+      const dy = deckY(t);
+      const by = bottomY(t);
+      const ring: THREE.Vector3[] = [];
+      for (let j = 0; j < nSec; j++) {
+        const s = j / (nSec - 1); // 0 = port deck edge, 0.5 = keel, 1 = stbd deck edge
+        const z = hb * Math.cos(Math.PI * s);
+        const y = dy - (dy - by) * Math.pow(Math.sin(Math.PI * s), 0.85);
+        ring.push(new THREE.Vector3(x, y, z));
+      }
+      rings.push(ring);
+    }
+
+    // Shell: loft triangles between adjacent station rings.
+    const shell: number[] = [];
+    const tri = (a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3) =>
+      shell.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+    for (let i = 0; i < nSt - 1; i++) {
+      for (let j = 0; j < nSec - 1; j++) {
+        const a = rings[i][j];
+        const b = rings[i + 1][j];
+        const c = rings[i + 1][j + 1];
+        const d = rings[i][j + 1];
+        tri(a, b, c);
+        tri(a, c, d);
+      }
+    }
+    // Transom cap at the stern (fan from the ring centre).
+    const stern = rings[0];
+    const sc = new THREE.Vector3(xStern, (stern[0].y + stern[(nSec - 1) / 2 | 0].y) * 0.5, 0);
+    for (let j = 0; j < nSec - 1; j++) {
+      tri(sc, stern[j + 1], stern[j]);
+    }
+
+    const shellGeo = new THREE.BufferGeometry();
+    shellGeo.setAttribute('position', new THREE.Float32BufferAttribute(shell, 3));
+    shellGeo.computeVertexNormals();
+    this.sharedGeo.push(shellGeo);
+    const hullMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#eceae2'), roughness: 0.45, metalness: 0.05, side: THREE.DoubleSide });
+    this.sharedMat.push(hullMat);
+    grp.add(new THREE.Mesh(shellGeo, hullMat));
+
+    // Deck: teak surface spanning the port and starboard deck edges.
+    const deck: number[] = [];
+    for (let i = 0; i < nSt - 1; i++) {
+      const p0 = rings[i][0];
+      const p1 = rings[i + 1][0];
+      const s0 = rings[i][nSec - 1];
+      const s1 = rings[i + 1][nSec - 1];
+      deck.push(p0.x, p0.y, p0.z, p1.x, p1.y, p1.z, s1.x, s1.y, s1.z);
+      deck.push(p0.x, p0.y, p0.z, s1.x, s1.y, s1.z, s0.x, s0.y, s0.z);
+    }
+    const deckGeo = new THREE.BufferGeometry();
+    deckGeo.setAttribute('position', new THREE.Float32BufferAttribute(deck, 3));
+    deckGeo.computeVertexNormals();
+    this.sharedGeo.push(deckGeo);
+    const deckMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#b98a52'), roughness: 0.85 });
+    this.sharedMat.push(deckMat);
+    grp.add(new THREE.Mesh(deckGeo, deckMat));
+
+    // Coachroof (cabin trunk): a low rounded box forward of the cockpit.
+    const cabinGeo = new THREE.BoxGeometry(0.85, 0.2, 0.55, 1, 1, 1);
+    this.sharedGeo.push(cabinGeo);
+    const cabinMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#f2f0ea'), roughness: 0.55 });
+    this.sharedMat.push(cabinMat);
+    const cabin = new THREE.Mesh(cabinGeo, cabinMat);
+    cabin.position.set(0.5, deckY(0.62) + 0.09, 0);
+    grp.add(cabin);
+
+    // Cockpit sole: a small recessed dark panel aft of the cabin.
+    const cockGeo = new THREE.BoxGeometry(0.6, 0.06, 0.5);
+    this.sharedGeo.push(cockGeo);
+    const cockMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#3c2c16'), roughness: 0.9 });
+    this.sharedMat.push(cockMat);
+    const cockpit = new THREE.Mesh(cockGeo, cockMat);
+    cockpit.position.set(-0.4, deckY(0.28) - 0.04, 0);
+    grp.add(cockpit);
+
+    return grp;
+  }
+
   private makeBoat(): THREE.Group {
     const group = new THREE.Group();
 
-    // Hull: an extruded boat outline (top-view silhouette) so it reads as a
-    // proper hull from the oblique camera rather than a plain box.
-    const hullMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#caa46a'), roughness: 0.7 });
-    this.sharedMat.push(hullMat);
-    const shape = new THREE.Shape();
-    shape.moveTo(1.15, 0);
-    shape.quadraticCurveTo(0.7, 0.42, -0.2, 0.44);
-    shape.quadraticCurveTo(-0.75, 0.44, -0.95, 0.26);
-    shape.lineTo(-0.95, -0.26);
-    shape.quadraticCurveTo(-0.75, -0.44, -0.2, -0.44);
-    shape.quadraticCurveTo(0.7, -0.42, 1.15, 0);
-    const hullGeo = new THREE.ExtrudeGeometry(shape, { depth: 0.34, bevelEnabled: true, bevelThickness: 0.08, bevelSize: 0.06, bevelSegments: 1 });
-    hullGeo.rotateX(-Math.PI / 2); // lay the outline on the ground, extrude upward
-    this.sharedGeo.push(hullGeo);
-    const hull = new THREE.Mesh(hullGeo, hullMat);
-    hull.position.y = 0.02;
-    group.add(hull);
-
-    // Cockpit well: a darker inset near the stern.
-    const wellMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#5a3c1a'), roughness: 0.9 });
-    const wellGeo = new THREE.BoxGeometry(0.5, 0.1, 0.34);
-    this.sharedGeo.push(wellGeo);
-    this.sharedMat.push(wellMat);
-    const well = new THREE.Mesh(wellGeo, wellMat);
-    well.position.set(-0.35, 0.36, 0);
-    group.add(well);
-
+    // A proper lofted hull (stations along the length) instead of a flat block.
+    group.add(this.makeHull());
     // Heel pivot: everything above the waterline tilts around the forward axis.
     const rig = new THREE.Group();
     rig.name = 'rig';
@@ -375,6 +466,22 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     furl.position.copy(bowTack).add(mastHead).multiplyScalar(0.5);
     furl.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), furlDir.normalize());
     rig.add(furl);
+
+    // Running rigging (sheets): ropes from each sail's clew back to the hull, so
+    // the sails are visibly trimmed rather than floating free. Endpoints are
+    // re-set every frame from the live clew positions.
+    const sheetMat = new THREE.LineBasicMaterial({ color: 0x2b2317 });
+    this.sharedMat.push(sheetMat);
+    const mainSheetGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+    this.sharedGeo.push(mainSheetGeo);
+    const mainSheet = new THREE.Line(mainSheetGeo, sheetMat);
+    mainSheet.name = 'mainSheet';
+    rig.add(mainSheet);
+    const jibSheetGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+    this.sharedGeo.push(jibSheetGeo);
+    const jibSheet = new THREE.Line(jibSheetGeo, sheetMat);
+    jibSheet.name = 'jibSheet';
+    rig.add(jibSheet);
 
     // Anchor rig (toggled when the boat is anchored): a rode from the bow down to
     // a small anchor resting just under the surface ahead of the boat. Lives on
@@ -567,6 +674,8 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     const main = rig.getObjectByName('main') as THREE.Mesh | undefined;
     const boom = rig.getObjectByName('boom') as THREE.Mesh | undefined;
     const jib = rig.getObjectByName('jib') as THREE.Mesh | undefined;
+    const mainSheetLine = rig.getObjectByName('mainSheet') as THREE.Line | undefined;
+    const jibSheetLine = rig.getObjectByName('jibSheet') as THREE.Line | undefined;
 
     // ---- Mainsail (grot) ----
     if (main) {
@@ -596,6 +705,13 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
         if (boom) {
           this.alignSpar(boom, tack, clew);
         }
+        // Mainsheet: from the boom clew down to the traveller on the cockpit sole.
+        if (mainSheetLine) {
+          mainSheetLine.visible = true;
+          this.setLine(mainSheetLine, clew, new THREE.Vector3(-0.5, 0.42, 0));
+        }
+      } else if (mainSheetLine) {
+        mainSheetLine.visible = false;
       }
     }
 
@@ -624,14 +740,29 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
         const belly = jibLuff ? 0.05 : 0.3 * power;
         const flutter = jibLuff ? 0.16 * gust : 0.025;
         this.updateSail(jib, tack, head, clew, lee, belly, flutter, t + 1.7);
+        // Jib sheet: from the clew back to a fairlead on the side deck.
+        if (jibSheetLine) {
+          jibSheetLine.visible = true;
+          this.setLine(jibSheetLine, clew, new THREE.Vector3(-0.05, 0.46, lee * 0.34));
+        }
+      } else if (jibSheetLine) {
+        jibSheetLine.visible = false;
       }
       if (furl) {
-        // Thin foil when unfurled, fat roll of cloth when furled away.
+        // Thin foil when unfurled, a modest roll of cloth when furled away.
         furl.visible = !capsized;
-        const r = 0.02 + 0.12 * (1 - this.clamp01(jibDeploy));
+        const r = 0.015 + 0.055 * (1 - this.clamp01(jibDeploy));
         furl.scale.set(r, 1, r);
       }
     }
+  }
+
+  // Re-point a 2-vertex line between a and b.
+  private setLine(line: THREE.Line, a: THREE.Vector3, b: THREE.Vector3): void {
+    const attr = (line.geometry as THREE.BufferGeometry).attributes['position'] as THREE.BufferAttribute;
+    attr.setXYZ(0, a.x, a.y, a.z);
+    attr.setXYZ(1, b.x, b.y, b.z);
+    attr.needsUpdate = true;
   }
 
   // Aim a unit-length spar (modelled along +X) so it spans from a to b.
@@ -680,20 +811,24 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     // Third-person chase camera: sit just astern of the player and above the
     // deck, turning WITH the boat's heading (like the skipper's own view), so
     // steering left swings the whole world left. The boat stays centred.
+    // Third-person chase camera locked astern of the player and turning WITH the
+    // boat's heading, so the boat stays dead-centre in the frame. We read the
+    // boat mesh's own position so the target can never drift from what's drawn.
     const player = this.playerBoatId ? this.boats.find((b) => b.boatId === this.playerBoatId) : undefined;
+    const boatMesh = this.playerBoatId ? this.boatMeshes.get(this.playerBoatId) : undefined;
     const h = ((player ? player.heading : 90) * Math.PI) / 180;
     const fwd = new THREE.Vector3(Math.cos(h), 0, Math.sin(h));
-    const wy = this.waveHeight(p.x, p.y, t);
-    // Aim straight at the boat so it stays centred in the frame.
-    const camTarget = new THREE.Vector3(p.x, wy + 1.0, p.y);
+    const boatPos = boatMesh ? boatMesh.position : new THREE.Vector3(p.x, this.waveHeight(p.x, p.y, t), p.y);
+    const camTarget = new THREE.Vector3(boatPos.x, boatPos.y + 1.3, boatPos.z);
     const camDist = 8.5;
-    const camHeight = 4.8;
+    const camHeight = 4.4;
     const desired = new THREE.Vector3(
-      p.x - fwd.x * camDist,
-      wy + camHeight,
-      p.y - fwd.z * camDist,
+      boatPos.x - fwd.x * camDist,
+      boatPos.y + camHeight,
+      boatPos.z - fwd.z * camDist,
     );
-    this.camera.position.lerp(desired, 0.15);
+    // Smooth only the orbit position; lookAt always re-centres the boat.
+    this.camera.position.lerp(desired, 0.3);
     this.camera.lookAt(camTarget);
 
     this.renderer.render(this.scene, this.camera);
