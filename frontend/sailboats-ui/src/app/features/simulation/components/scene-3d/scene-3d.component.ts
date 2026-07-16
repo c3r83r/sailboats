@@ -416,57 +416,20 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
 
     // Coachroof (nadbudówka): a long, low cabin with rounded corners, extruded
     // from a plan-view rounded rectangle so it looks moulded, not a plain box.
-    const cabW = 0.22; // half width
-    const cabFront = 1.0;
-    const cabAft = -0.34;
-    const cshape = new THREE.Shape();
-    const rr = 0.16;
-    cshape.moveTo(cabAft, -cabW);
-    cshape.lineTo(cabFront - rr, -cabW);
-    cshape.quadraticCurveTo(cabFront, -cabW, cabFront, -cabW + rr);
-    cshape.lineTo(cabFront, cabW - rr);
-    cshape.quadraticCurveTo(cabFront, cabW, cabFront - rr, cabW);
-    cshape.lineTo(cabAft, cabW);
-    cshape.closePath();
-    const cabGeo = new THREE.ExtrudeGeometry(cshape, { depth: 0.18, bevelEnabled: true, bevelThickness: 0.05, bevelSize: 0.04, bevelSegments: 2 });
-    cabGeo.rotateX(-Math.PI / 2);
-    this.sharedGeo.push(cabGeo);
-    const cabinMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#f4f3ee'), roughness: 0.5 });
-    this.sharedMat.push(cabinMat);
-    const cabin = new THREE.Mesh(cabGeo, cabinMat);
-    const cabinBaseY = deckY(0.62) + 0.02;
-    cabin.position.set(0.12, cabinBaseY, 0);
-    grp.add(cabin);
-
-    // Window band: a dark strip wrapping the cabin sides (tinted glazing).
-    const winGeo = new THREE.BoxGeometry(1.12, 0.09, cabW * 2 + 0.05);
-    this.sharedGeo.push(winGeo);
-    const winMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#10141a'), roughness: 0.25, metalness: 0.3 });
-    this.sharedMat.push(winMat);
-    const windows = new THREE.Mesh(winGeo, winMat);
-    windows.position.set(0.34, cabinBaseY + 0.14, 0);
-    grp.add(windows);
-
-    // Companionway hatch (dark opening at the aft end of the cabin).
-    const hatchGeo = new THREE.BoxGeometry(0.22, 0.15, 0.3);
+    // Sleek flush deck: no tall coachroof (it made the boat look blocky). Only a
+    // low, flush sliding companionway hatch and a small forehatch remain.
+    const hatchMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#1a2028'), roughness: 0.3, metalness: 0.35 });
+    this.sharedMat.push(hatchMat);
+    const hatchGeo = new THREE.BoxGeometry(0.42, 0.05, 0.34);
     this.sharedGeo.push(hatchGeo);
-    const hatch = new THREE.Mesh(hatchGeo, winMat);
-    hatch.position.set(-0.28, cabinBaseY + 0.13, 0);
+    const hatch = new THREE.Mesh(hatchGeo, hatchMat);
+    hatch.position.set(-0.18, deckY(0.5) + 0.03, 0);
     grp.add(hatch);
-
-    // Cabin-top grab rails: thin dark tubes each side of the coachroof.
-    const grabMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#8a6a3c'), roughness: 0.6 });
-    this.sharedMat.push(grabMat);
-    for (const sign of [1, -1]) {
-      const gr = new THREE.CatmullRomCurve3([
-        new THREE.Vector3(0.75, cabinBaseY + 0.2, sign * (cabW - 0.05)),
-        new THREE.Vector3(0.3, cabinBaseY + 0.22, sign * (cabW - 0.03)),
-        new THREE.Vector3(-0.15, cabinBaseY + 0.22, sign * (cabW - 0.03)),
-      ]);
-      const grGeo = new THREE.TubeGeometry(gr, 12, 0.014, 5, false);
-      this.sharedGeo.push(grGeo);
-      grp.add(new THREE.Mesh(grGeo, grabMat));
-    }
+    const foreGeo = new THREE.BoxGeometry(0.22, 0.04, 0.22);
+    this.sharedGeo.push(foreGeo);
+    const forehatch = new THREE.Mesh(foreGeo, hatchMat);
+    forehatch.position.set(0.6, deckY(0.72) + 0.03, 0);
+    grp.add(forehatch);
 
     // Cockpit sole: a recessed dark panel aft of the cabin.
     const cockGeo = new THREE.BoxGeometry(0.72, 0.06, 0.52);
@@ -733,6 +696,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     belly: number,
     flutter: number,
     phase: number,
+    twist: number = 0.14,
   ): void {
     const geo = mesh.geometry as THREE.BufferGeometry;
     const pos = geo.attributes['position'] as THREE.BufferAttribute;
@@ -747,10 +711,17 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       Lv.copy(tack).lerp(head, v);
       Tv.copy(clew).lerp(head, v);
       p.copy(Lv).lerp(Tv, u);
-      // Belly bulges to leeward, fullest low and mid-chord, tapering to the head.
-      const camber = belly * Math.sin(Math.PI * u) * (1 - 0.45 * v);
-      const flap = flutter * Math.sin(u * 6.2 + v * 3.1 + phase * 9) * (0.3 + 0.7 * u);
-      p.z += leewardSign * camber + flap;
+      // Aerofoil camber: draft biased ~40% aft of the luff, and tapered near the
+      // head and foot so the sail stays flat where it is attached (keeps the
+      // foot from bulging down through the deck/hull).
+      const draft = Math.sin(Math.PI * Math.pow(u, 0.72));
+      const heightTaper = Math.pow(Math.sin(Math.PI * (0.12 + 0.76 * v)), 0.6);
+      const camber = belly * draft * heightTaper;
+      // Leech twists open toward the head (the top falls off to leeward).
+      const twistZ = twist * u * v * v;
+      // Luffing shiver: a travelling ripple, strongest along the leech.
+      const flap = flutter * Math.sin(u * 7.5 + v * 2.2 + phase * 11) * (0.15 + 0.85 * u * u);
+      p.z += leewardSign * (camber + twistZ) + flap;
       pos.setXYZ(i, p.x, p.y, p.z);
     }
     pos.needsUpdate = true;
@@ -914,7 +885,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
         const power = mainDeploy * (0.35 + 0.65 * mainSheet);
         const belly = mainLuff ? 0.05 : 0.34 * power;
         const flutter = mainLuff ? 0.14 * gust : 0.02;
-        this.updateSail(main, tack, head, clew, lee, belly, flutter, t);
+        this.updateSail(main, tack, head, clew, lee, belly, flutter, t, 0.1);
         // Mainsheet: from the boom clew down to the traveller on the cockpit sole.
         if (mainSheetLine) {
           mainSheetLine.visible = true;
@@ -935,25 +906,27 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       const show = !capsized && rolled > 0.02;
       jib.visible = show;
       if (show) {
-        const tack = new THREE.Vector3(1.34, 0.34, 0);
-        const head = new THREE.Vector3(0.3, 2.35, 0); // luff runs the full forestay
-        const jibFoot = 0.72;
+        // Tack lifted well clear of the foredeck so the sail can never sweep
+        // down through the hull; the luff still rides the forestay.
+        const tack = new THREE.Vector3(1.3, 0.52, 0);
+        const head = new THREE.Vector3(0.3, 2.35, 0);
+        const jibFoot = 0.7;
         const jibAngle = 0.22 + (1 - jibSheet) * 0.85;
         const fullClew = new THREE.Vector3(
-          1.34 - Math.cos(jibAngle) * jibFoot,
-          0.62,
+          1.3 - Math.cos(jibAngle) * jibFoot,
+          0.82,
           lee * Math.sin(jibAngle) * jibFoot,
         );
         // Roller furl: clew rolls in toward the tack/stay as the sail furls.
         const clew = tack.clone().lerp(fullClew, rolled);
         const power = rolled * (0.35 + 0.65 * jibSheet);
         const belly = jibLuff ? 0.05 : 0.3 * power;
-        const flutter = jibLuff ? 0.16 * gust : 0.025;
-        this.updateSail(jib, tack, head, clew, lee, belly, flutter, t + 1.7);
+        const flutter = jibLuff ? 0.18 * gust : 0.03;
+        this.updateSail(jib, tack, head, clew, lee, belly, flutter, t + 1.7, 0.22);
         // Jib sheet: from the clew back to a fairlead on the side deck.
         if (jibSheetLine) {
           jibSheetLine.visible = true;
-          this.setLine(jibSheetLine, clew, new THREE.Vector3(-0.05, 0.46, lee * 0.34));
+          this.setLine(jibSheetLine, clew, new THREE.Vector3(-0.05, 0.46, lee * 0.32));
         }
       } else if (jibSheetLine) {
         jibSheetLine.visible = false;
