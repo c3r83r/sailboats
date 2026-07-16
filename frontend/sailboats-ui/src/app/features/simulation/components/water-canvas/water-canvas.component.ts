@@ -632,7 +632,8 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
   }
 
   private drawIslands(ctx: CanvasRenderingContext2D, lake: LakeRect, scale: number): void {
-    for (const island of this.islands) {
+    for (let idx = 0; idx < this.islands.length; idx++) {
+      const island = this.islands[idx];
       if (!island.points || island.points.length < 3) {
         continue;
       }
@@ -658,12 +659,16 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
 
       // The polygon `pts` sits at the waterline; the grassy top is lifted up the
       // screen by `lift` so the island reads as land rising out of the water,
-      // with a sandy cliff wall showing along its lower, near edge (2.5D).
-      const lift = this.clamp(islandR * 0.22, 5, 20);
+      // with a sandy shore showing along its lower, near edge (2.5D).
+      const lift = this.clamp(islandR * 0.2, 5, 18);
       const topPts = pts.map((p) => ({ x: p.x, y: p.y - lift }));
+      // A sandy beach rim slightly wider than the waterline silhouette so land
+      // eases into the water instead of jumping straight to a hard cliff.
+      const beachPts = pts.map((p) => ({ x: cx + (p.x - cx) * 1.1, y: cy + (p.y - cy) * 1.1 }));
 
       const waterPath = this.islandPath(pts);
       const topPath = this.islandPath(topPts);
+      const beachPath = this.islandPath(beachPts);
 
       // Cast shadow: the waterline silhouette dropped toward the scene light so
       // the land reads as raised above the water.
@@ -671,40 +676,111 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
       const shadowPts = pts.map((p) => ({ x: p.x + this.shadowDir.x * shOff, y: p.y + this.shadowDir.y * shOff }));
       const shadowPath = this.islandPath(shadowPts);
       ctx.save();
-      ctx.fillStyle = 'rgba(3, 14, 24, 0.32)';
+      ctx.fillStyle = 'rgba(3, 14, 24, 0.3)';
       ctx.fill(shadowPath);
       ctx.restore();
 
-      // Shallow-water halo at the waterline so the island reads as a hazard.
+      // Soft shallow-water glow so the island reads as a hazard from a distance.
       ctx.save();
       ctx.lineJoin = 'round';
       ctx.lineCap = 'round';
-      ctx.strokeStyle = 'rgba(173, 216, 196, 0.45)';
-      ctx.lineWidth = 7 * scale;
-      ctx.stroke(waterPath);
+      ctx.strokeStyle = 'rgba(180, 224, 205, 0.4)';
+      ctx.lineWidth = 9 * scale;
+      ctx.stroke(beachPath);
       ctx.restore();
 
-      // Sandy cliff wall: the waterline silhouette, shaded as a vertical face,
-      // visible as a band under the lifted grass along the near/lower edge.
-      const wall = ctx.createLinearGradient(cx, cy - lift, cx, cy + lift);
-      wall.addColorStop(0, '#b7975180'); // subtle near the top (mostly covered)
-      wall.addColorStop(0.5, '#9c7d42');
-      wall.addColorStop(1, '#6f5730');
+      // Sandy beach rim at the waterline.
+      const beach = ctx.createRadialGradient(cx, cy, islandR * 0.5, cx, cy, islandR * 1.12);
+      beach.addColorStop(0, '#e9d7a4');
+      beach.addColorStop(0.7, '#dcc487');
+      beach.addColorStop(1, 'rgba(210, 190, 130, 0.35)');
+      ctx.fillStyle = beach;
+      ctx.fill(beachPath);
+
+      // Rocky shore band under the lifted grass along the near/lower edge.
+      const wall = ctx.createLinearGradient(cx, cy - lift, cx, cy + lift * 0.6);
+      wall.addColorStop(0, 'rgba(150, 132, 96, 0.4)');
+      wall.addColorStop(0.55, '#a08a5c');
+      wall.addColorStop(1, '#7a6540');
       ctx.fillStyle = wall;
       ctx.fill(waterPath);
 
-      // Grassy top surface.
-      const grad = ctx.createRadialGradient(cx, cy - lift, islandR * 0.1, cx, cy - lift, islandR);
-      grad.addColorStop(0, '#caa85f'); // sand core
-      grad.addColorStop(0.45, '#7fa05a'); // grass
-      grad.addColorStop(1, '#5d7e46'); // darker rim
+      // Grassy top surface: warm sandy core easing out to a green fringe.
+      const grad = ctx.createRadialGradient(cx, cy - lift, islandR * 0.08, cx, cy - lift, islandR * 1.05);
+      grad.addColorStop(0, '#b9c47a'); // sun-bleached centre
+      grad.addColorStop(0.4, '#86a860'); // grass
+      grad.addColorStop(0.78, '#638a4b');
+      grad.addColorStop(1, '#4d7440'); // shaded rim
       ctx.fillStyle = grad;
       ctx.fill(topPath);
 
-      ctx.strokeStyle = 'rgba(60, 84, 48, 0.85)';
+      // Vegetation detail: deterministic grass tufts and little trees clipped to
+      // the grassy top so the surface no longer reads as a flat blob.
+      ctx.save();
+      ctx.clip(topPath);
+      const rand = this.mulberry32(idx * 9973 + 17);
+      const tufts = Math.round(this.clamp(islandR / 9, 5, 22));
+      for (let i = 0; i < tufts; i++) {
+        const ang = rand() * Math.PI * 2;
+        const rr = Math.sqrt(rand()) * islandR * 0.82;
+        const px = cx + Math.cos(ang) * rr;
+        const py = cy - lift + Math.sin(ang) * rr * 0.9;
+        const rad = (2 + rand() * 3) * scale;
+        // shadow blob then a lighter highlight for a soft tuft of foliage.
+        ctx.fillStyle = 'rgba(58, 84, 44, 0.5)';
+        ctx.beginPath();
+        ctx.ellipse(px + scale, py + scale, rad * 1.15, rad, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = rand() > 0.5 ? 'rgba(150, 180, 108, 0.8)' : 'rgba(122, 158, 92, 0.85)';
+        ctx.beginPath();
+        ctx.ellipse(px, py, rad, rad * 0.9, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      // A few small conifer trees near the centre for scale and life.
+      const trees = Math.round(this.clamp(islandR / 22, 1, 5));
+      for (let i = 0; i < trees; i++) {
+        const ang = rand() * Math.PI * 2;
+        const rr = Math.sqrt(rand()) * islandR * 0.5;
+        const px = cx + Math.cos(ang) * rr;
+        const py = cy - lift + Math.sin(ang) * rr * 0.85;
+        const th = (7 + rand() * 4) * scale;
+        ctx.fillStyle = 'rgba(20, 40, 22, 0.35)';
+        ctx.beginPath();
+        ctx.ellipse(px + th * 0.4, py + th * 0.15, th * 0.7, th * 0.28, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#3f6a37';
+        ctx.beginPath();
+        ctx.moveTo(px, py - th);
+        ctx.lineTo(px - th * 0.5, py + th * 0.2);
+        ctx.lineTo(px + th * 0.5, py + th * 0.2);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = '#4f8043';
+        ctx.beginPath();
+        ctx.moveTo(px, py - th * 1.15);
+        ctx.lineTo(px - th * 0.36, py - th * 0.1);
+        ctx.lineTo(px + th * 0.36, py - th * 0.1);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.restore();
+
+      ctx.strokeStyle = 'rgba(58, 82, 46, 0.7)';
       ctx.lineWidth = 1.4 * scale;
       ctx.stroke(topPath);
     }
+  }
+
+  // Small deterministic PRNG so island vegetation stays put frame to frame.
+  private mulberry32(seed: number): () => number {
+    let a = seed >>> 0;
+    return () => {
+      a |= 0;
+      a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
   }
 
   // Smooth, closed island outline through the given screen-space vertices.

@@ -98,6 +98,20 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
   private orbitDir = 0; // -1 / 0 / +1 while a key is held
   private readonly ORBIT_SPEED = 1.8; // radians per second
   private lastTime = 0;
+
+  // Smoothed chase-camera state so the view eases behind the boat with a slight
+  // lag on turns instead of snapping (which read as jitter).
+  private camYaw: number | null = null; // smoothed astern azimuth (radians)
+  private camLook = new THREE.Vector3(); // smoothed look-at target
+  private camReady = false;
+
+  // World boundary frame (built once) and drifting wind streaks.
+  private boundsGroup?: THREE.Group;
+  private windStreaks?: THREE.LineSegments;
+  private windGeo?: THREE.BufferGeometry;
+  private windHeads: Float32Array = new Float32Array(0); // xyz per streak, player-relative
+  private readonly WIND_COUNT = 150;
+  private readonly WIND_BOX = 60; // extent (scene units) of the streak field
   private readonly onOrbitKeyDown = (e: KeyboardEvent) => {
     if (e.key === '9') {
       this.orbitDir = -1;
@@ -164,6 +178,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     this.sharedMat.forEach((m) => m.dispose());
     this.sailTexture?.dispose();
     this.waterGeo?.dispose();
+    this.windGeo?.dispose();
     this.renderer?.dispose();
     if (this.renderer && this.hostRef) {
       this.hostRef.nativeElement.removeChild(this.renderer.domElement);
@@ -1180,6 +1195,147 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     return v < 0 ? 0 : v > 1 ? 1 : v;
   }
 
+  // Visible boundary of the playable area: a translucent fence with a bright top
+  // rope, a waterline edge and marker posts, built once from the world size.
+  private ensureWorldBounds(): void {
+    if (this.boundsGroup || !this.scene) {
+      return;
+    }
+    const W = this.worldWidth;
+    const H = this.worldHeight;
+    const wallH = 2.0;
+    const g = new THREE.Group();
+
+    const wallMat = new THREE.MeshBasicMaterial({
+      color: 0xff6b52,
+      transparent: true,
+      opacity: 0.1,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    this.sharedMat.push(wallMat);
+    const mkWall = (w: number, x: number, z: number, ry: number) => {
+      const geo = new THREE.PlaneGeometry(w, wallH);
+      this.sharedGeo.push(geo);
+      const m = new THREE.Mesh(geo, wallMat);
+      m.position.set(x, wallH / 2, z);
+      m.rotation.y = ry;
+      g.add(m);
+    };
+    mkWall(W, W / 2, 0, 0);
+    mkWall(W, W / 2, H, 0);
+    mkWall(H, 0, H / 2, Math.PI / 2);
+    mkWall(H, W, H / 2, Math.PI / 2);
+
+    const corners = (y: number) => [
+      new THREE.Vector3(0, y, 0),
+      new THREE.Vector3(W, y, 0),
+      new THREE.Vector3(W, y, H),
+      new THREE.Vector3(0, y, H),
+    ];
+    const topGeo = new THREE.BufferGeometry().setFromPoints(corners(wallH));
+    const botGeo = new THREE.BufferGeometry().setFromPoints(corners(0.08));
+    this.sharedGeo.push(topGeo, botGeo);
+    const topMat = new THREE.LineBasicMaterial({ color: 0xffd24a });
+    const botMat = new THREE.LineBasicMaterial({ color: 0x9fe8d0 });
+    this.sharedMat.push(topMat, botMat);
+    g.add(new THREE.LineLoop(topGeo, topMat));
+    g.add(new THREE.LineLoop(botGeo, botMat));
+
+    const postMat = new THREE.MeshStandardMaterial({ color: 0xd94f3d, roughness: 0.6 });
+    const capMat = new THREE.MeshStandardMaterial({ color: 0xffe08a, emissive: 0x553a00, roughness: 0.5 });
+    const postGeo = new THREE.CylinderGeometry(0.09, 0.12, wallH + 0.4, 8);
+    const capGeo = new THREE.SphereGeometry(0.22, 10, 8);
+    this.sharedMat.push(postMat, capMat);
+    this.sharedGeo.push(postGeo, capGeo);
+    const addPost = (x: number, z: number) => {
+      const post = new THREE.Mesh(postGeo, postMat);
+      post.position.set(x, (wallH + 0.4) / 2, z);
+      g.add(post);
+      const cap = new THREE.Mesh(capGeo, capMat);
+      cap.position.set(x, wallH + 0.45, z);
+      g.add(cap);
+    };
+    const step = 6;
+    const xs: number[] = [];
+    for (let x = 0; x <= W; x += step) {
+      xs.push(x);
+    }
+    if (xs[xs.length - 1] !== W) {
+      xs.push(W);
+    }
+    for (const x of xs) {
+      addPost(x, 0);
+      addPost(x, H);
+    }
+    for (let z = step; z < H; z += step) {
+      addPost(0, z);
+      addPost(W, z);
+    }
+
+    this.boundsGroup = g;
+    this.scene.add(g);
+  }
+
+  // A field of short line "streaks" drifting downwind around the player so the
+  // wind direction is visible in 3D (they stream toward `windDirection`, i.e.
+  // away from where the wind blows from).
+  private ensureWindStreaks(): void {
+    if (this.windStreaks || !this.scene) {
+      return;
+    }
+    const n = this.WIND_COUNT;
+    const half = this.WIND_BOX / 2;
+    this.windHeads = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      this.windHeads[i * 3] = (Math.random() * 2 - 1) * half;
+      this.windHeads[i * 3 + 1] = 0.4 + Math.random() * 4.6;
+      this.windHeads[i * 3 + 2] = (Math.random() * 2 - 1) * half;
+    }
+    this.windGeo = new THREE.BufferGeometry();
+    this.windGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 2 * 3), 3));
+    const mat = new THREE.LineBasicMaterial({ color: 0xeaf6ff, transparent: true, opacity: 0.32 });
+    this.sharedMat.push(mat);
+    this.windStreaks = new THREE.LineSegments(this.windGeo, mat);
+    this.windStreaks.frustumCulled = false;
+    this.scene.add(this.windStreaks);
+  }
+
+  private updateWindStreaks(dt: number, p: { x: number; y: number }): void {
+    if (!this.windStreaks || !this.windGeo) {
+      return;
+    }
+    const rad = (this.windDirection * Math.PI) / 180;
+    const dx = Math.cos(rad);
+    const dz = Math.sin(rad);
+    const speed = 6 + this.windStrength * 1.6;
+    const streak = 1.2 + this.windStrength * 0.25;
+    const half = this.WIND_BOX / 2;
+    const pos = this.windGeo.attributes['position'].array as Float32Array;
+    const n = this.WIND_COUNT;
+    for (let i = 0; i < n; i++) {
+      let hx = this.windHeads[i * 3] + dx * speed * dt;
+      let hz = this.windHeads[i * 3 + 2] + dz * speed * dt;
+      if (hx > half) hx -= this.WIND_BOX;
+      else if (hx < -half) hx += this.WIND_BOX;
+      if (hz > half) hz -= this.WIND_BOX;
+      else if (hz < -half) hz += this.WIND_BOX;
+      this.windHeads[i * 3] = hx;
+      this.windHeads[i * 3 + 2] = hz;
+      const hy = this.windHeads[i * 3 + 1];
+      const wx = p.x + hx;
+      const wz = p.y + hz;
+      const j = i * 6;
+      pos[j] = wx;
+      pos[j + 1] = hy;
+      pos[j + 2] = wz;
+      pos[j + 3] = wx - dx * streak;
+      pos[j + 4] = hy;
+      pos[j + 5] = wz - dz * streak;
+    }
+    this.windGeo.attributes['position'].needsUpdate = true;
+  }
+
   private update(): void {
     if (!this.renderer || !this.scene || !this.camera) {
       return;
@@ -1187,6 +1343,8 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     const t = this.clock.getElapsedTime();
 
     this.ensureIslands();
+    this.ensureWorldBounds();
+    this.ensureWindStreaks();
     this.syncBoats(t);
 
     // Recentre the water on the player and displace its vertices for real waves.
@@ -1214,7 +1372,6 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     const boatMesh = this.playerBoatId ? this.boatMeshes.get(this.playerBoatId) : undefined;
     const h = ((player ? player.heading : 90) * Math.PI) / 180;
     const boatPos = boatMesh ? boatMesh.position : new THREE.Vector3(p.x, this.waveHeight(p.x, p.y, t), p.y);
-    const camTarget = new THREE.Vector3(boatPos.x, boatPos.y + 1.9, boatPos.z);
     const camDist = 11;
     const camHeight = 5.6;
 
@@ -1223,18 +1380,46 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     this.lastTime = t;
     this.orbit += this.orbitDir * this.ORBIT_SPEED * dt;
 
-    // View direction from the boat: astern by default (heading + PI), swung
-    // around by the orbit angle so 9 / 0 rotate the camera about the ship.
-    const viewAng = h + Math.PI + this.orbit;
+    // Drift the wind streaks downwind around the player.
+    this.updateWindStreaks(dt, p);
+
+    // Ease the camera azimuth toward the boat's heading so it trails the turn
+    // with a gentle lag. Frame-rate independent exponential smoothing, resolving
+    // the shortest way around the circle so it never spins the long way.
+    const targetYaw = h + this.orbit;
+    if (this.camYaw === null) {
+      this.camYaw = targetYaw;
+    } else {
+      let delta = targetYaw - this.camYaw;
+      while (delta > Math.PI) delta -= Math.PI * 2;
+      while (delta < -Math.PI) delta += Math.PI * 2;
+      // ~3.5 rad/s response: smooth but still keeps up with normal steering.
+      this.camYaw += delta * (1 - Math.exp(-3.5 * dt));
+    }
+
+    // View direction from the boat: astern of the smoothed heading.
+    const viewAng = this.camYaw + Math.PI;
     const off = new THREE.Vector3(Math.cos(viewAng), 0, Math.sin(viewAng));
     const desired = new THREE.Vector3(
       boatPos.x + off.x * camDist,
       boatPos.y + camHeight,
       boatPos.z + off.z * camDist,
     );
-    // Smooth only the orbit position; lookAt always re-centres the boat.
-    this.camera.position.lerp(desired, 0.3);
-    this.camera.lookAt(camTarget);
+    const lookTarget = new THREE.Vector3(boatPos.x, boatPos.y + 1.9, boatPos.z);
+
+    if (!this.camReady) {
+      this.camera.position.copy(desired);
+      this.camLook.copy(lookTarget);
+      this.camReady = true;
+    } else {
+      // Smooth position and the look target together so both the framing and the
+      // pan stay fluid rather than locking rigidly to the (noisy) boat mesh.
+      const posK = 1 - Math.exp(-6 * dt);
+      const lookK = 1 - Math.exp(-8 * dt);
+      this.camera.position.lerp(desired, posK);
+      this.camLook.lerp(lookTarget, lookK);
+    }
+    this.camera.lookAt(this.camLook);
 
     this.renderer.render(this.scene, this.camera);
   }
