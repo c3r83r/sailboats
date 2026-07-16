@@ -172,7 +172,6 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
   private boundsW = 0;
   private boundsH = 0;
   private boundsDisposables: { dispose(): void }[] = [];
-  private glassTex?: THREE.CanvasTexture;
   private windStreaks?: THREE.LineSegments;
   private windGeo?: THREE.BufferGeometry;
   private windHeads: Float32Array = new Float32Array(0); // xyz per streak, player-relative
@@ -271,7 +270,6 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     this.sailTexture?.dispose();
     this.jibSailTexture?.dispose();
     this.boundsDisposables.forEach((d) => d.dispose());
-    this.glassTex?.dispose();
     this.wakeGeo?.dispose();
     this.wakeTex?.dispose();
     this.bowWaveTex?.dispose();
@@ -1319,14 +1317,6 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     jibSheet.name = 'jibSheet';
     rig.add(jibSheet);
 
-    // Anchor rig (toggled when the boat is anchored): a rode from the bow down to
-    // a small anchor resting just under the surface ahead of the boat. Lives on
-    // the hull group (not the rig) so it does not heel.
-    const anchor = this.makeAnchor();
-    anchor.name = 'anchor';
-    anchor.visible = false;
-    group.add(anchor);
-
     this.scene?.add(group);
     return group;
   }
@@ -1476,78 +1466,6 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     }
     pos.needsUpdate = true;
     geo.computeVertexNormals();
-  }
-
-  private makeAnchor(): THREE.Group {
-    const grp = new THREE.Group();
-    const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#2c3038'), roughness: 0.42, metalness: 0.8 });
-    this.sharedMat.push(mat);
-    // Local frame: the anchor is stowed at the bow, shank vertical (+Y up) with
-    // the stock across Z and the crown/flukes at the bottom.
-    const base = new THREE.Vector3(1.6, 0.14, 0);
-
-    // Rode (chain) from the bow roller down to the shackle.
-    const rodeMat = new THREE.LineBasicMaterial({ color: 0x1b1e23 });
-    this.sharedMat.push(rodeMat);
-    const rodeGeo = new THREE.BufferGeometry().setFromPoints([
-      new THREE.Vector3(1.36, 0.44, 0),
-      new THREE.Vector3(base.x, base.y + 0.56, 0),
-    ]);
-    this.sharedGeo.push(rodeGeo);
-    grp.add(new THREE.Line(rodeGeo, rodeMat));
-
-    // Shackle ring at the top of the shank.
-    const ringGeo = new THREE.TorusGeometry(0.1, 0.028, 8, 16);
-    this.sharedGeo.push(ringGeo);
-    const ring = new THREE.Mesh(ringGeo, mat);
-    ring.position.set(base.x, base.y + 0.58, 0);
-    ring.rotation.y = Math.PI / 2;
-    grp.add(ring);
-
-    // Shank: the main vertical bar.
-    const shankGeo = new THREE.CylinderGeometry(0.045, 0.052, 0.86, 8);
-    this.sharedGeo.push(shankGeo);
-    const shank = new THREE.Mesh(shankGeo, mat);
-    shank.position.set(base.x, base.y + 0.14, 0);
-    grp.add(shank);
-
-    // Stock: the crossbar near the top (along Z) with rounded ends.
-    const stockGeo = new THREE.CylinderGeometry(0.03, 0.03, 0.66, 6);
-    stockGeo.rotateX(Math.PI / 2);
-    this.sharedGeo.push(stockGeo);
-    const stock = new THREE.Mesh(stockGeo, mat);
-    stock.position.set(base.x, base.y + 0.44, 0);
-    grp.add(stock);
-    const knobGeo = new THREE.SphereGeometry(0.05, 8, 6);
-    this.sharedGeo.push(knobGeo);
-    for (const z of [-0.33, 0.33]) {
-      const k = new THREE.Mesh(knobGeo, mat);
-      k.position.set(base.x, base.y + 0.44, z);
-      grp.add(k);
-    }
-
-    // Curved crown/arms: a half-torus bowl opening upward at the base.
-    const crownGeo = new THREE.TorusGeometry(0.3, 0.05, 8, 22, Math.PI);
-    this.sharedGeo.push(crownGeo);
-    const crown = new THREE.Mesh(crownGeo, mat);
-    crown.position.set(base.x, base.y - 0.3, 0);
-    crown.rotation.z = Math.PI; // flip the arc into a ∪ bowl
-    grp.add(crown);
-
-    // Triangular flukes (barbs) at each arm tip.
-    const flukeGeo = new THREE.ConeGeometry(0.12, 0.3, 4);
-    this.sharedGeo.push(flukeGeo);
-    const armTip = 0.3;
-    const leftFluke = new THREE.Mesh(flukeGeo, mat);
-    leftFluke.position.set(base.x - armTip, base.y - 0.22, 0);
-    leftFluke.rotation.z = 0.9;
-    grp.add(leftFluke);
-    const rightFluke = new THREE.Mesh(flukeGeo, mat);
-    rightFluke.position.set(base.x + armTip, base.y - 0.22, 0);
-    rightFluke.rotation.z = -0.9;
-    grp.add(rightFluke);
-
-    return grp;
   }
 
   // Green health buoy carrying a white "+" topmark; matches the 2D pickup.
@@ -1815,11 +1733,6 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
         }
       }
 
-      const anchor = g.getObjectByName('anchor');
-      if (anchor) {
-        anchor.visible = !!boat.anchored && !boat.capsized && !boat.sunk;
-      }
-
       // Cannon elevation: barrels sit level when ready and lift while reloading,
       // easing back down to level as the gun crew finishes loading.
       const pivots = g.userData['cannonPivots'] as THREE.Object3D[] | undefined;
@@ -1849,8 +1762,8 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       });
 
       // Floating nickname above the masthead (billboard sprite, world-space so it
-      // never heels with the hull). Redraw only when the name changes.
-      const label = this.ensureNameLabel(boat.boatId, boat.name);
+      // never heels with the hull). Redraw only when the name (or anchor) changes.
+      const label = this.ensureNameLabel(boat.boatId, boat.name, !!boat.anchored && !boat.sunk);
       if (label) {
         label.visible = !boat.sunk;
         label.position.set(disp.x, wy + 5.7, disp.y);
@@ -1876,13 +1789,14 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
 
   // Get or (re)build the nickname billboard for a boat, redrawing its texture
   // only when the displayed name actually changes.
-  private ensureNameLabel(boatId: string, name?: string): THREE.Sprite | undefined {
+  private ensureNameLabel(boatId: string, name?: string, anchored = false): THREE.Sprite | undefined {
     const text = (name ?? '').trim() || 'Żeglarz';
+    const key = text + (anchored ? '|a' : '');
     let sprite = this.nameLabels.get(boatId);
-    if (sprite && sprite.userData['name'] === text) {
+    if (sprite && sprite.userData['name'] === key) {
       return sprite;
     }
-    const { canvas, aspect } = this.drawNameCanvas(text);
+    const { canvas, aspect } = this.drawNameCanvas(text, anchored);
     if (!sprite) {
       const mat = new THREE.SpriteMaterial({
         map: new THREE.CanvasTexture(canvas),
@@ -1900,22 +1814,23 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       sprite.material.map = new THREE.CanvasTexture(canvas);
       sprite.material.needsUpdate = true;
     }
-    sprite.userData['name'] = text;
+    sprite.userData['name'] = key;
     const height = 0.82; // world units tall
     sprite.scale.set(height * aspect, height, 1);
     return sprite;
   }
 
   // Render a nickname onto a canvas: a soft translucent pill with crisp white
-  // text, sized to the text so the sprite never stretches.
-  private drawNameCanvas(text: string): { canvas: HTMLCanvasElement; aspect: number } {
+  // text, optionally preceded by a small anchor icon when the boat is anchored.
+  private drawNameCanvas(text: string, anchored = false): { canvas: HTMLCanvasElement; aspect: number } {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const fontPx = 34;
     const padX = 22;
+    const iconW = anchored ? fontPx + 8 : 0; // reserved space for the anchor glyph
     const measure = document.createElement('canvas').getContext('2d')!;
     measure.font = `600 ${fontPx}px "Segoe UI", system-ui, sans-serif`;
     const textW = Math.ceil(measure.measureText(text).width);
-    const cw = textW + padX * 2;
+    const cw = textW + iconW + padX * 2;
     const ch = fontPx + 24;
     const canvas = document.createElement('canvas');
     canvas.width = Math.round(cw * dpr);
@@ -1936,15 +1851,62 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     ctx.lineWidth = 1.5;
     ctx.strokeStyle = 'rgba(143, 227, 255, 0.35)';
     ctx.stroke();
-    // Text.
+    // Anchor icon on the left when anchored.
+    if (anchored) {
+      this.drawAnchorIcon(ctx, padX + iconW / 2 - 4, ch / 2, fontPx * 0.44);
+    }
+    // Text (shifted right past any icon).
     ctx.font = `600 ${fontPx}px "Segoe UI", system-ui, sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillStyle = '#eaf6ff';
     ctx.shadowColor = 'rgba(0, 0, 0, 0.55)';
     ctx.shadowBlur = 3;
-    ctx.fillText(text, cw / 2, ch / 2 + 1);
+    ctx.fillText(text, padX + iconW + textW / 2, ch / 2 + 1);
     return { canvas, aspect: cw / ch };
+  }
+
+  // A small vector anchor glyph (ring, shank, stock, curved arms) drawn centred
+  // on (cx, cy) with the given half-height, used in the anchored boat label.
+  private drawAnchorIcon(ctx: CanvasRenderingContext2D, cx: number, cy: number, s: number): void {
+    ctx.save();
+    ctx.strokeStyle = '#eaf6ff';
+    ctx.fillStyle = '#eaf6ff';
+    ctx.lineWidth = Math.max(2, s * 0.2);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.55)';
+    ctx.shadowBlur = 2;
+    const top = cy - s;
+    const bot = cy + s;
+    // Ring at the top of the shank.
+    ctx.beginPath();
+    ctx.arc(cx, top, s * 0.3, 0, Math.PI * 2);
+    ctx.stroke();
+    // Shank down the middle.
+    ctx.beginPath();
+    ctx.moveTo(cx, top + s * 0.3);
+    ctx.lineTo(cx, bot);
+    ctx.stroke();
+    // Stock (crossbar).
+    ctx.beginPath();
+    ctx.moveTo(cx - s * 0.52, top + s * 0.66);
+    ctx.lineTo(cx + s * 0.52, top + s * 0.66);
+    ctx.stroke();
+    // Curved arms (the ∪ at the crown) plus fluke tips.
+    const cyc = bot - s * 0.2;
+    const rad = s * 0.78;
+    const a0 = Math.PI * 0.12;
+    const a1 = Math.PI * 0.88;
+    ctx.beginPath();
+    ctx.arc(cx, cyc, rad, a0, a1, false);
+    ctx.stroke();
+    for (const a of [a0, a1]) {
+      ctx.beginPath();
+      ctx.arc(cx + Math.cos(a) * rad, cyc + Math.sin(a) * rad, s * 0.16, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
   }
 
   // Reshape both sails, aim the boom, and toggle rig visibility for one boat.
@@ -2136,7 +2098,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     if (this.boundsGroup && this.boundsW === this.worldWidth && this.boundsH === this.worldHeight) {
       return;
     }
-    // Tear down a stale fence (different lake size) before rebuilding.
+    // Tear down a stale shore (different lake size) before rebuilding.
     if (this.boundsGroup) {
       this.scene.remove(this.boundsGroup);
       for (const d of this.boundsDisposables) {
@@ -2147,56 +2109,16 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
 
     const W = this.worldWidth;
     const H = this.worldHeight;
-    const wallH = 3.0;
     const g = new THREE.Group();
-    const glass = this.getGlassTexture();
 
-    // One glass sheet per edge. Each wall clones the shared crack texture so it
-    // can repeat at its own length while keeping the shards roughly square.
-    const mkWall = (len: number, x: number, z: number, ry: number) => {
-      const geo = new THREE.PlaneGeometry(len, wallH);
-      this.boundsDisposables.push(geo);
-      const tex = glass.clone();
-      tex.needsUpdate = true;
-      tex.wrapS = THREE.RepeatWrapping;
-      tex.wrapT = THREE.ClampToEdgeWrapping;
-      tex.repeat.set(Math.max(1, Math.round(len / wallH)), 1);
-      this.boundsDisposables.push(tex);
-      const mat = new THREE.MeshBasicMaterial({
-        map: tex,
-        color: 0xcfe9ff,
-        transparent: true,
-        opacity: 0.34,
-        side: THREE.DoubleSide,
-        depthWrite: false,
-        blending: THREE.AdditiveBlending,
-      });
-      this.boundsDisposables.push(mat);
-      const m = new THREE.Mesh(geo, mat);
-      m.position.set(x, wallH / 2, z);
-      m.rotation.y = ry;
-      g.add(m);
-    };
-    mkWall(W, W / 2, 0, 0);
-    mkWall(W, W / 2, H, 0);
-    mkWall(H, 0, H / 2, Math.PI / 2);
-    mkWall(H, W, H / 2, Math.PI / 2);
-
-    // Icy top rim and a faint waterline edge to give the glass a defined border.
-    const corners = (y: number) => [
-      new THREE.Vector3(0, y, 0),
-      new THREE.Vector3(W, y, 0),
-      new THREE.Vector3(W, y, H),
-      new THREE.Vector3(0, y, H),
-    ];
-    const topGeo = new THREE.BufferGeometry().setFromPoints(corners(wallH));
-    const botGeo = new THREE.BufferGeometry().setFromPoints(corners(0.05));
-    this.boundsDisposables.push(topGeo, botGeo);
-    const topMat = new THREE.LineBasicMaterial({ color: 0xd8f6ff, transparent: true, opacity: 0.85 });
-    const botMat = new THREE.LineBasicMaterial({ color: 0x8fd6ff, transparent: true, opacity: 0.5 });
-    this.boundsDisposables.push(topMat, botMat);
-    g.add(new THREE.LineLoop(topGeo, topMat));
-    g.add(new THREE.LineLoop(botGeo, botMat));
+    // A sloped shore ringing the whole lake — sandy at the waterline, rising
+    // through a beach and bank to a wide grassy plain that runs out to the fogged
+    // horizon, so the play area reads as a real lake instead of a glass box.
+    const geo = this.buildShoreGeometry(W, H);
+    this.boundsDisposables.push(geo);
+    const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, side: THREE.DoubleSide });
+    this.boundsDisposables.push(mat);
+    g.add(new THREE.Mesh(geo, mat));
 
     this.boundsGroup = g;
     this.boundsW = W;
@@ -2204,85 +2126,80 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     this.scene.add(g);
   }
 
-  // A shattered-glass texture: a translucent frosted tint overlaid with several
-  // impact points, each spraying radial cracks joined by concentric shard rings.
-  private getGlassTexture(): THREE.CanvasTexture {
-    if (this.glassTex) {
-      return this.glassTex;
-    }
-    const S = 256;
-    const c = document.createElement('canvas');
-    c.width = S;
-    c.height = S;
-    const ctx = c.getContext('2d')!;
-    ctx.clearRect(0, 0, S, S);
-    // Faint frosted panes so the glass reads even away from the cracks.
-    ctx.fillStyle = 'rgba(200, 228, 248, 0.05)';
-    ctx.fillRect(0, 0, S, S);
-    for (let i = 0; i < 5; i++) {
-      ctx.fillStyle = `rgba(220, 240, 255, ${0.02 + Math.random() * 0.03})`;
-      const w = 40 + Math.random() * 120;
-      const h = 40 + Math.random() * 120;
-      ctx.fillRect(Math.random() * S, Math.random() * S, w, h);
+  // Concentric rectangular rings around the lake [0,W]x[0,H]: the inner ring sits
+  // at the waterline (sand just awash), rising through a beach and bank to a wide
+  // grassy plain reaching past the fog. Sandy near the water, grassy higher up.
+  private buildShoreGeometry(W: number, H: number): THREE.BufferGeometry {
+    const offsets = [0, 0.7, 2.2, 9, 90];
+    const heights = [-0.1, 0.12, 0.55, 1.3, 1.7];
+    const jitter = [0, 0.18, 0.4, 0.55, 0];
+    const seg = 16; // sample points per rectangle edge
+    const sand = new THREE.Color('#d8c68f');
+    const grass = new THREE.Color('#6f9350');
+    const peak = 1.7;
+
+    // Perimeter points for the lake rectangle expanded outward by d, as a loop.
+    const ringPts = (d: number): { x: number; z: number }[] => {
+      const x0 = -d;
+      const x1 = W + d;
+      const z0 = -d;
+      const z1 = H + d;
+      const pts: { x: number; z: number }[] = [];
+      const edge = (ax: number, az: number, bx: number, bz: number) => {
+        for (let i = 0; i < seg; i++) {
+          const u = i / seg;
+          pts.push({ x: ax + (bx - ax) * u, z: az + (bz - az) * u });
+        }
+      };
+      edge(x0, z0, x1, z0);
+      edge(x1, z0, x1, z1);
+      edge(x1, z1, x0, z1);
+      edge(x0, z1, x0, z0);
+      return pts;
+    };
+
+    const rings = offsets.map(ringPts);
+    const n = rings[0].length;
+    const positions: number[] = [];
+    const colors: number[] = [];
+    const ringStart: number[] = [];
+    for (let ri = 0; ri < rings.length; ri++) {
+      ringStart.push(positions.length / 3);
+      const jf = jitter[ri];
+      for (let j = 0; j < n; j++) {
+        const p = rings[ri][j];
+        // Deterministic wobble so the bank isn't a perfectly straight rectangle.
+        const y = heights[ri] + (jf ? (this.hashNoise(ri * 131 + j) - 0.5) * jf : 0);
+        positions.push(p.x, y, p.z);
+        const tt = THREE.MathUtils.clamp(heights[ri] / peak, 0, 1);
+        const col = sand.clone().lerp(grass, THREE.MathUtils.smoothstep(tt, 0.05, 0.5));
+        colors.push(col.r, col.g, col.b);
+      }
     }
 
-    const impacts = [
-      { x: S * 0.28, y: S * 0.42 },
-      { x: S * 0.68, y: S * 0.3 },
-      { x: S * 0.52, y: S * 0.72 },
-    ];
-    for (const imp of impacts) {
-      const spokes = 8 + Math.floor(Math.random() * 5);
-      const angs: number[] = [];
-      for (let k = 0; k < spokes; k++) {
-        angs.push((k / spokes) * Math.PI * 2 + Math.random() * 0.3);
+    const indices: number[] = [];
+    for (let ri = 0; ri < rings.length - 1; ri++) {
+      const a = ringStart[ri];
+      const b = ringStart[ri + 1];
+      for (let j = 0; j < n; j++) {
+        const j2 = (j + 1) % n;
+        indices.push(a + j, a + j2, b + j2);
+        indices.push(a + j, b + j2, b + j);
       }
-      // Radial cracks streaking out from the impact, thinning as they go.
-      for (const a of angs) {
-        const len = 40 + Math.random() * 90;
-        let x = imp.x;
-        let y = imp.y;
-        ctx.beginPath();
-        ctx.moveTo(x, y);
-        const segs = 4;
-        for (let s = 1; s <= segs; s++) {
-          const jitter = (Math.random() - 0.5) * 0.25;
-          x += Math.cos(a + jitter) * (len / segs);
-          y += Math.sin(a + jitter) * (len / segs);
-          ctx.lineTo(x, y);
-        }
-        ctx.strokeStyle = `rgba(255, 255, 255, ${0.25 + Math.random() * 0.35})`;
-        ctx.lineWidth = 0.6 + Math.random() * 1.2;
-        ctx.stroke();
-      }
-      // Concentric shard rings linking neighbouring spokes into glass fragments.
-      for (let r = 12; r < 90; r += 14 + Math.random() * 12) {
-        ctx.beginPath();
-        for (let k = 0; k <= spokes; k++) {
-          const a = angs[k % spokes];
-          const rr = r * (0.8 + Math.random() * 0.4);
-          const x = imp.x + Math.cos(a) * rr;
-          const y = imp.y + Math.sin(a) * rr;
-          if (k === 0) {
-            ctx.moveTo(x, y);
-          } else {
-            ctx.lineTo(x, y);
-          }
-        }
-        ctx.strokeStyle = `rgba(230, 246, 255, ${0.12 + Math.random() * 0.2})`;
-        ctx.lineWidth = 0.5 + Math.random() * 0.8;
-        ctx.stroke();
-      }
-      // A bright pinch of highlight at the impact core.
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
-      ctx.beginPath();
-      ctx.arc(imp.x, imp.y, 1.6, 0, Math.PI * 2);
-      ctx.fill();
     }
-    const tex = new THREE.CanvasTexture(c);
-    tex.anisotropy = 4;
-    this.glassTex = tex;
-    return tex;
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    geo.setIndex(indices);
+    geo.computeVertexNormals();
+    return geo;
+  }
+
+  // Cheap deterministic 0..1 hash for static shoreline wobble.
+  private hashNoise(i: number): number {
+    const s = Math.sin(i * 12.9898) * 43758.5453;
+    return s - Math.floor(s);
   }
 
   // Reshape the wake ribbon along the player's recent path and fade it in/out
