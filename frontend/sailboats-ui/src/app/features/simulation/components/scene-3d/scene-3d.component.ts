@@ -690,7 +690,10 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     // stay whose radius grows as the jib rolls away (thin foil when fully unfurled).
     const furlDir = mastHead.clone().sub(bowTack);
     const furlLen = furlDir.length();
-    const furlGeo = new THREE.CylinderGeometry(1, 1, furlLen, 8);
+    // Tapered roll: the jib is triangular, so little cloth rolls up near the head
+    // (thin at the top) and more toward the tack (a touch wider at the bottom).
+    // +Y of the cylinder ends at the masthead, -Y at the bow tack.
+    const furlGeo = new THREE.CylinderGeometry(0.28, 1, furlLen, 8);
     this.sharedGeo.push(furlGeo);
     const furl = new THREE.Mesh(furlGeo, sailMat);
     furl.name = 'jibFurl';
@@ -757,6 +760,12 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       ctx.lineTo(128, y);
       ctx.stroke();
     }
+    // Foot band (lik dolny): a navy tape along the foot edge (v=0 => canvas
+    // bottom) so the lower contour of each sail reads clearly against the sky.
+    ctx.fillStyle = '#16225c';
+    ctx.fillRect(0, 248, 128, 8);
+    ctx.fillStyle = 'rgba(22, 34, 92, 0.55)';
+    ctx.fillRect(0, 244, 128, 3);
     const tex = new THREE.CanvasTexture(c);
     tex.anisotropy = 4;
     this.sailTexture = tex;
@@ -1067,9 +1076,10 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
         jibSheetLine.visible = false;
       }
       if (furl) {
-        // Thin foil when unfurled, only a slim roll of cloth when furled away.
+        // Thin foil when unfurled, only a slim (tapered) roll of cloth when
+        // furled away — noticeably narrower than a full sail-sized sausage.
         furl.visible = !capsized;
-        const r = 0.012 + 0.03 * (1 - this.clamp01(jibDeploy));
+        const r = 0.011 + 0.021 * (1 - this.clamp01(jibDeploy));
         furl.scale.set(r, 1, r);
       }
     }
