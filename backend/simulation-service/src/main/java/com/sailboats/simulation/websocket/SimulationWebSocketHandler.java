@@ -91,7 +91,7 @@ public class SimulationWebSocketHandler extends TextWebSocketHandler {
             session.getAttributes().put("lakeId", lakeId);
         } else {
             simulationEngine.updateControls(
-                new ControlInput(boatId, payload.rudder(), payload.sailTrim(), payload.anchored()));
+                new ControlInput(boatId, payload.rudder(), payload.sailTrim(), payload.heelLoad(), payload.anchored()));
         }
     }
 
@@ -187,7 +187,7 @@ public class SimulationWebSocketHandler extends TextWebSocketHandler {
         }
     }
 
-    private record ControlPayload(String type, double rudder, double sailTrim, boolean anchored, String side,
+    private record ControlPayload(String type, double rudder, double sailTrim, double heelLoad, boolean anchored, String side,
                                   double power, String lakeId, String size, boolean bots, Double windDirection,
                                   String name) {
     }

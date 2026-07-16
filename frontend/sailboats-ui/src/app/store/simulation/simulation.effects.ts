@@ -28,7 +28,7 @@ export class SimulationEffects {
     () =>
       this.actions$.pipe(
         ofType(SimulationActions.controlsChanged),
-        tap(({ controls }) => this.simulationWsService.sendControls(controls.rudder, controls.sailTrim, controls.anchored))
+        tap(({ controls }) => this.simulationWsService.sendControls(controls.rudder, controls.sailTrim, controls.anchored, controls.heelLoad ?? 0))
       ),
     { dispatch: false }
   );

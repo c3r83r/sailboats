@@ -54,7 +54,7 @@ public class LakeWorld {
 
     // Heel & capsize: the lateral component of the rig force leans the boat to
     // leeward; a big enough gust on a beam reach with full sail knocks it flat.
-    private static final double HEEL_GAIN = 16.0; // deg per unit of heeling pressure
+    private static final double HEEL_GAIN = 27.0; // deg per unit of heeling pressure
     private static final double MAX_HEEL_DEG = 55.0;
     private static final double HEEL_RESPONSE = 0.10; // how fast heel eases toward target
     private static final double CAPSIZE_HEEL_DEG = 50.0; // beyond this the boat capsizes
@@ -239,6 +239,7 @@ public class LakeWorld {
         }
         boat.setRudder(Math.max(-1, Math.min(1, input.rudder())));
         boat.setSailTrim(Math.max(0, Math.min(1, input.sailTrim())));
+        boat.setHeelLoad(Math.max(0, Math.min(1, input.heelLoad())));
         boat.setAnchored(input.anchored());
     }
 
@@ -408,11 +409,13 @@ public class LakeWorld {
             boat.setY(nextY);
 
             // Heel: the lateral (heeling) component of the rig force leans the
-            // boat to leeward. Strongest on a beam reach with full sail in a
-            // gust; eases smoothly toward the target so it never snaps.
+            // boat to leeward. Driven by how hard the sails are sheeted (heelLoad)
+            // rather than the forward drive, so hauling the sheets in on a beam
+            // reach heels the boat hard and can knock it down. Bots use sailTrim.
             double relRad = Math.toRadians(signedDelta(windFrom, nextHeading));
             double lateral = Math.sin(relRad);
-            double heelPressure = windUnits * boat.getSailTrim() * Math.abs(lateral);
+            double sailLoad = boat.isBot() ? boat.getSailTrim() : boat.getHeelLoad();
+            double heelPressure = windUnits * sailLoad * Math.abs(lateral);
             double heelTarget = -Math.signum(lateral) * Math.min(MAX_HEEL_DEG, HEEL_GAIN * heelPressure);
             double newHeel = boat.getHeel() + (heelTarget - boat.getHeel()) * HEEL_RESPONSE;
             boat.setHeel(newHeel);

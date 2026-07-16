@@ -1114,7 +1114,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
   private readonly pressed = new Set<string>();
   private loopHandle: ReturnType<typeof setInterval> | null = null;
-  private lastSent = { rudder: 0, sailTrim: 0, anchored: true };
+  private lastSent = { rudder: 0, sailTrim: 0, heelLoad: 0, anchored: true };
   // Disconnect a player who leaves the page (tab hidden) for too long.
   private awayTimer: ReturnType<typeof setTimeout> | null = null;
   private awayDisconnected = false;
@@ -1619,18 +1619,20 @@ export class AppComponent implements OnInit, OnDestroy {
     const force = drive.mainPower + Math.max(0, drive.jibPower);
     this.heel = this.clamp(leewardSign * force * Math.abs(lateral), -1, 1);
 
-    const controls: HelmControlState = { ...this.controls, sailTrim: drive.sailTrim };
+    const controls: HelmControlState = { ...this.controls, sailTrim: drive.sailTrim, heelLoad: drive.heelLoad };
     this.controls = controls;
 
     // Only push to the store/WS when something meaningfully changed.
     if (
       Math.abs(controls.rudder - this.lastSent.rudder) > 0.004 ||
       Math.abs(controls.sailTrim - this.lastSent.sailTrim) > 0.004 ||
+      Math.abs((controls.heelLoad ?? 0) - this.lastSent.heelLoad) > 0.004 ||
       controls.anchored !== this.lastSent.anchored
     ) {
       this.lastSent = {
         rudder: controls.rudder,
         sailTrim: controls.sailTrim,
+        heelLoad: controls.heelLoad ?? 0,
         anchored: controls.anchored,
       };
       this.store.dispatch(SimulationActions.controlsChanged({ controls }));
@@ -1650,12 +1652,13 @@ export class AppComponent implements OnInit, OnDestroy {
     this.controls = fresh;
     this.autoTrim = false;
     this.jibWing = 0;
-    this.lastSent = { rudder: 0, sailTrim: 0, anchored: true };
+    this.lastSent = { rudder: 0, sailTrim: 0, heelLoad: 0, anchored: true };
     this.store.dispatch(SimulationActions.controlsChanged({ controls: fresh }));
   }
 
   private computeDrive(controls: HelmControlState): {
     sailTrim: number;
+    heelLoad: number;
     mainThrust: number;
     jibThrust: number;
     mainPower: number;
@@ -1726,8 +1729,17 @@ export class AppComponent implements OnInit, OnDestroy {
     // Main carries most of the drive; reefing either sail always slows the boat
     // because the two are blended rather than saturated.
     const sailTrim = this.clamp(main.thrust * 0.6 + jib.thrust * 0.4, 0, 1);
+    // heelLoad is how hard the sails are loaded up (area x sheet), which keeps
+    // rising as you sheet in even past the drive optimum (an over-sheeted sail
+    // still heels the boat). The server turns this into heel/capsize.
+    const heelLoad = this.clamp(
+      controls.main.deploy * controls.main.sheet * 0.62 + controls.jib.deploy * controls.jib.sheet * 0.38,
+      0,
+      1,
+    );
     return {
       sailTrim,
+      heelLoad,
       mainThrust: main.thrust,
       jibThrust: jib.thrust,
       mainPower: main.power,

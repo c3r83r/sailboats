@@ -970,6 +970,17 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
 
     const lee = heelDeg >= 0 ? 1 : -1;
     const gust = this.clamp(this.windStrength / 5, 0.6, 1.6);
+    // Point of sail (0 = head to wind, 180 = dead run): sails are fuller (more
+    // belly) the deeper the course, and flatter ("bladed") the closer to the wind.
+    const windFrom = this.windDirection + 180;
+    let bd = (boat.heading - windFrom) % 360;
+    if (bd < -180) {
+      bd += 360;
+    } else if (bd > 180) {
+      bd -= 360;
+    }
+    const beta = Math.abs(bd);
+    const camberScale = 0.35 + 0.85 * (beta / 180);
 
     const main = rig.getObjectByName('main') as THREE.Mesh | undefined;
     const boom = rig.getObjectByName('boom') as THREE.Mesh | undefined;
@@ -983,8 +994,8 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       main.visible = show;
       // The boom is a fixed spar: it stays on the mast even when the sail is
       // furled (it just rests near the centreline).
-      const boomY = 0.95;
-      const foot = 1.05;
+      const boomY = 0.62;
+      const foot = 1.25;
       const boomAngle = show ? 0.12 + (1 - mainSheet) * 0.95 : 0.1;
       const tack = new THREE.Vector3(0.25, boomY, 0);
       const clew = new THREE.Vector3(
@@ -999,10 +1010,10 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       if (show) {
         // Tall, high-aspect main running well up the taller mast, with a
         // convex (roached) leech like a real mainsail.
-        const headY = boomY + 2.45 * (0.6 + 0.4 * mainDeploy);
+        const headY = boomY + 2.9 * (0.6 + 0.4 * mainDeploy);
         const head = new THREE.Vector3(0.25, headY, 0);
         const power = mainDeploy * (0.35 + 0.65 * mainSheet);
-        const belly = mainLuff ? 0.05 : 0.34 * power;
+        const belly = mainLuff ? 0.05 : 0.36 * power * camberScale;
         const flutter = mainLuff ? 0.14 * gust : 0.02;
         this.updateSail(main, tack, head, clew, lee, belly, flutter, t, 0.12, 0.22);
         // Mainsheet: from the boom clew down to the traveller on the cockpit sole.
@@ -1043,8 +1054,8 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
         // Roller furl: clew rolls in toward the tack/stay as the sail furls.
         const clew = tack.clone().lerp(fullClew, rolled);
         const power = rolled * (0.4 + 0.6 * jibSheet);
-        // A fuller, more convex jib than the main.
-        const belly = jibLuff ? 0.06 : 0.46 * power;
+        // A fuller, more convex jib than the main; fuller the deeper the course.
+        const belly = jibLuff ? 0.06 : 0.5 * power * camberScale;
         const flutter = jibLuff ? 0.18 * gust : 0.03;
         this.updateSail(jib, tack, head, clew, jibSide, belly, flutter, t + 1.7, 0.26);
         // Jib sheet: from the clew back to a fairlead on the side deck.
