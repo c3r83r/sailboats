@@ -29,7 +29,22 @@ export type PointOfSailLabel = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad
           <span class="stat-value">{{ windStrength | number : '1.0-1' }}<i>kn</i></span>
           <span class="wind-arrow" [style.transform]="'rotate(' + (windDirection - 90) + 'deg)'">&#8595;</span>
         </div>
+        <div class="stat">
+          <span class="stat-label">Przechył</span>
+          <span class="stat-value" [class.warn]="heelAbs >= 40">{{ heelAbs | number : '1.0-0' }}<i>&deg;{{ heelSide }}</i></span>
+        </div>
       </div>
+
+      <article class="card heel" [class.warn]="heelAbs >= 40">
+        <div class="card-top">
+          <span class="card-title">Wychylenie</span>
+          <span class="card-meta">{{ heelLabel }}</span>
+        </div>
+        <div class="heel-track">
+          <i class="heel-mid"></i>
+          <i class="heel-mark" [style.left.%]="heelMarkLeft"></i>
+        </div>
+      </article>
 
       <article class="card hull" [class.warn]="health <= 30">
         <div class="card-top">
@@ -308,6 +323,38 @@ export type PointOfSailLabel = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad
       transition: left 0.08s linear, width 0.08s linear;
     }
 
+    .heel-track {
+      position: relative;
+      height: 12px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, rgba(42,157,143,0.35), rgba(255,255,255,0.08) 45%, rgba(255,255,255,0.08) 55%, rgba(214,145,50,0.35));
+      overflow: hidden;
+    }
+
+    .heel-mid {
+      position: absolute;
+      left: 50%;
+      top: 0;
+      bottom: 0;
+      width: 2px;
+      transform: translateX(-1px);
+      background: rgba(255, 255, 255, 0.4);
+    }
+
+    .heel-mark {
+      position: absolute;
+      top: -2px;
+      width: 4px;
+      height: 16px;
+      border-radius: 2px;
+      transform: translateX(-2px);
+      background: #7bdff2;
+      box-shadow: 0 0 6px rgba(123, 223, 242, 0.8);
+      transition: left 0.1s linear;
+    }
+
+    .card.heel.warn .heel-mark { background: #ff9a9a; box-shadow: 0 0 6px rgba(255, 120, 120, 0.9); }
+
     .meters { display: grid; gap: 7px; }
 
     .meter {
@@ -408,6 +455,31 @@ export class ControlPanelComponent {
   @Input() armedSide: FireSide | null = null;
   @Input() windDirection = 0;
   @Input() windStrength = 0;
+  @Input() heel = 0;
+
+  get heelAbs(): number {
+    return Math.abs(this.heel);
+  }
+
+  get heelSide(): string {
+    if (this.heelAbs < 1) return '';
+    return this.heel < 0 ? 'L' : 'P';
+  }
+
+  get heelLabel(): string {
+    const a = this.heelAbs;
+    if (a >= 50) return 'WYWROTKA!';
+    if (a >= 40) return 'BURTA W WODZIE';
+    if (a >= 22) return 'MOCNY PRZECHYŁ';
+    if (a >= 8) return 'w przechyle';
+    return 'na równej stępce';
+  }
+
+  // Marker on a -60..+60 deg track (0 = centre, upright).
+  get heelMarkLeft(): number {
+    const clamped = Math.max(-60, Math.min(60, this.heel));
+    return 50 + (clamped / 60) * 50;
+  }
 
   get rudderAngle(): number {
     return this.controls.rudder * 60;

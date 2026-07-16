@@ -257,7 +257,8 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
           [cannonCooldown]="cannonCooldown"
           [armedSide]="chargingSide"
           [windDirection]="(wind$ | async)?.direction ?? 0"
-          [windStrength]="(wind$ | async)?.strength ?? 0">
+          [windStrength]="(wind$ | async)?.strength ?? 0"
+          [heel]="heel">
         </app-control-panel>
       </section>
     </main>

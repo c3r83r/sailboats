@@ -86,7 +86,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
   private boatMeshes = new Map<string, THREE.Group>();
   private islandMeshes = new Map<string, THREE.Mesh>();
   private projectileMeshes = new Map<string, THREE.Mesh>();
-  private buoyMeshes = new Map<string, THREE.Mesh>();
+  private buoyMeshes = new Map<string, THREE.Group>();
   private lastIslandsRef: Island[] | null = null;
 
   private sharedGeo: THREE.BufferGeometry[] = [];
@@ -111,8 +111,16 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
   private windGeo?: THREE.BufferGeometry;
   private windHeads: Float32Array = new Float32Array(0); // xyz per streak, player-relative
   private windPhase: Float32Array = new Float32Array(0); // per-streak meander phase + speed jitter
-  private readonly WIND_COUNT = 90;
+  private readonly WIND_COUNT = 130;
   private readonly WIND_BOX = 60; // extent (scene units) of the streak field
+
+  // Top compass strip (a 2D overlay canvas) marking bearings to boats (red),
+  // islands (yellow) and buoys (green) relative to the player's heading.
+  private compassCanvas?: HTMLCanvasElement;
+  private compassCtx: CanvasRenderingContext2D | null = null;
+  private compassW = 0;
+  private compassDpr = 1;
+  private readonly COMPASS_H = 46;
   private readonly onOrbitKeyDown = (e: KeyboardEvent) => {
     if (e.key === '9') {
       this.orbitDir = -1;
@@ -136,6 +144,18 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.renderer.shadowMap.enabled = false;
     host.appendChild(this.renderer.domElement);
+
+    // Overlay canvas for the top compass strip.
+    const cc = document.createElement('canvas');
+    cc.style.position = 'absolute';
+    cc.style.left = '0';
+    cc.style.top = '0';
+    cc.style.width = '100%';
+    cc.style.height = `${this.COMPASS_H}px`;
+    cc.style.pointerEvents = 'none';
+    host.appendChild(cc);
+    this.compassCanvas = cc;
+    this.compassCtx = cc.getContext('2d');
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color('#8fc4e6');
@@ -181,6 +201,9 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     this.waterGeo?.dispose();
     this.windGeo?.dispose();
     this.renderer?.dispose();
+    if (this.compassCanvas && this.hostRef) {
+      this.hostRef.nativeElement.removeChild(this.compassCanvas);
+    }
     if (this.renderer && this.hostRef) {
       this.hostRef.nativeElement.removeChild(this.renderer.domElement);
     }
@@ -199,9 +222,14 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     this.renderer.setSize(w, h); // updateStyle=true keeps the canvas CSS size in sync with the host
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
-  }
 
-  // ---- world helpers ----------------------------------------------------
+    if (this.compassCanvas) {
+      this.compassDpr = Math.min(window.devicePixelRatio || 1, 2);
+      this.compassW = w;
+      this.compassCanvas.width = Math.max(1, Math.round(w * this.compassDpr));
+      this.compassCanvas.height = Math.round(this.COMPASS_H * this.compassDpr);
+    }
+  }
 
   // World (x, y) maps to scene (x, 0, y): the lake lies on the XZ ground plane.
   private playerPos(): { x: number; y: number } {
@@ -914,49 +942,260 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
 
   private makeAnchor(): THREE.Group {
     const grp = new THREE.Group();
-    const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#3b4048'), roughness: 0.5, metalness: 0.6 });
+    const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#2c3038'), roughness: 0.42, metalness: 0.8 });
     this.sharedMat.push(mat);
-    // Hung at the bow roller just above the waterline so it reads clearly.
-    const anchorPos = new THREE.Vector3(1.55, 0.08, 0);
+    // Local frame: the anchor is stowed at the bow, shank vertical (+Y up) with
+    // the stock across Z and the crown/flukes at the bottom.
+    const base = new THREE.Vector3(1.6, 0.14, 0);
 
-    // Rode (chain) from the bow fitting down to the anchor stock.
-    const rodeMat = new THREE.LineBasicMaterial({ color: 0x20242a });
+    // Rode (chain) from the bow roller down to the shackle.
+    const rodeMat = new THREE.LineBasicMaterial({ color: 0x1b1e23 });
     this.sharedMat.push(rodeMat);
     const rodeGeo = new THREE.BufferGeometry().setFromPoints([
-      new THREE.Vector3(1.34, 0.36, 0),
-      new THREE.Vector3(anchorPos.x, anchorPos.y + 0.3, 0),
+      new THREE.Vector3(1.36, 0.44, 0),
+      new THREE.Vector3(base.x, base.y + 0.56, 0),
     ]);
     this.sharedGeo.push(rodeGeo);
     grp.add(new THREE.Line(rodeGeo, rodeMat));
 
-    // Anchor: a shank, a stock across the top and a curved crown with flukes.
-    const shankGeo = new THREE.CylinderGeometry(0.05, 0.05, 0.6, 6);
-    this.sharedGeo.push(shankGeo);
-    const shank = new THREE.Mesh(shankGeo, mat);
-    shank.position.copy(anchorPos);
-    grp.add(shank);
-
-    const ringGeo = new THREE.TorusGeometry(0.09, 0.03, 6, 12);
+    // Shackle ring at the top of the shank.
+    const ringGeo = new THREE.TorusGeometry(0.1, 0.028, 8, 16);
     this.sharedGeo.push(ringGeo);
     const ring = new THREE.Mesh(ringGeo, mat);
-    ring.position.set(anchorPos.x, anchorPos.y + 0.32, 0);
+    ring.position.set(base.x, base.y + 0.58, 0);
     ring.rotation.y = Math.PI / 2;
     grp.add(ring);
 
-    const stockGeo = new THREE.CylinderGeometry(0.035, 0.035, 0.5, 6);
+    // Shank: the main vertical bar.
+    const shankGeo = new THREE.CylinderGeometry(0.045, 0.052, 0.86, 8);
+    this.sharedGeo.push(shankGeo);
+    const shank = new THREE.Mesh(shankGeo, mat);
+    shank.position.set(base.x, base.y + 0.14, 0);
+    grp.add(shank);
+
+    // Stock: the crossbar near the top (along Z) with rounded ends.
+    const stockGeo = new THREE.CylinderGeometry(0.03, 0.03, 0.66, 6);
     stockGeo.rotateX(Math.PI / 2);
     this.sharedGeo.push(stockGeo);
     const stock = new THREE.Mesh(stockGeo, mat);
-    stock.position.set(anchorPos.x, anchorPos.y + 0.16, 0);
+    stock.position.set(base.x, base.y + 0.44, 0);
     grp.add(stock);
+    const knobGeo = new THREE.SphereGeometry(0.05, 8, 6);
+    this.sharedGeo.push(knobGeo);
+    for (const z of [-0.33, 0.33]) {
+      const k = new THREE.Mesh(knobGeo, mat);
+      k.position.set(base.x, base.y + 0.44, z);
+      grp.add(k);
+    }
 
-    const crownGeo = new THREE.TorusGeometry(0.22, 0.045, 6, 14, Math.PI);
+    // Curved crown/arms: a half-torus bowl opening upward at the base.
+    const crownGeo = new THREE.TorusGeometry(0.3, 0.05, 8, 22, Math.PI);
     this.sharedGeo.push(crownGeo);
     const crown = new THREE.Mesh(crownGeo, mat);
-    crown.position.set(anchorPos.x, anchorPos.y - 0.32, 0);
+    crown.position.set(base.x, base.y - 0.3, 0);
+    crown.rotation.z = Math.PI; // flip the arc into a ∪ bowl
     grp.add(crown);
 
+    // Triangular flukes (barbs) at each arm tip.
+    const flukeGeo = new THREE.ConeGeometry(0.12, 0.3, 4);
+    this.sharedGeo.push(flukeGeo);
+    const armTip = 0.3;
+    const leftFluke = new THREE.Mesh(flukeGeo, mat);
+    leftFluke.position.set(base.x - armTip, base.y - 0.22, 0);
+    leftFluke.rotation.z = 0.9;
+    grp.add(leftFluke);
+    const rightFluke = new THREE.Mesh(flukeGeo, mat);
+    rightFluke.position.set(base.x + armTip, base.y - 0.22, 0);
+    rightFluke.rotation.z = -0.9;
+    grp.add(rightFluke);
+
     return grp;
+  }
+
+  // Green health buoy carrying a white "+" topmark; matches the 2D pickup.
+  private makeBuoy(): THREE.Group {
+    const grp = new THREE.Group();
+    const bodyMat = new THREE.MeshStandardMaterial({ color: 0x1f9d52, roughness: 0.45, metalness: 0.1, emissive: 0x0c5228, emissiveIntensity: 0.5 });
+    const whiteMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.55, emissive: 0x2a4a38, emissiveIntensity: 0.25 });
+    this.sharedMat.push(bodyMat, whiteMat);
+
+    const bodyGeo = new THREE.CylinderGeometry(0.34, 0.44, 0.78, 14);
+    this.sharedGeo.push(bodyGeo);
+    const body = new THREE.Mesh(bodyGeo, bodyMat);
+    body.position.y = 0.42;
+    grp.add(body);
+
+    const capGeo = new THREE.SphereGeometry(0.34, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2);
+    this.sharedGeo.push(capGeo);
+    const cap = new THREE.Mesh(capGeo, bodyMat);
+    cap.position.y = 0.81;
+    grp.add(cap);
+
+    const bandGeo = new THREE.CylinderGeometry(0.36, 0.36, 0.16, 14);
+    this.sharedGeo.push(bandGeo);
+    const band = new THREE.Mesh(bandGeo, whiteMat);
+    band.position.y = 0.55;
+    grp.add(band);
+
+    // Topmark pole and a white "+" cross that reads from any angle.
+    const poleGeo = new THREE.CylinderGeometry(0.035, 0.035, 0.5, 6);
+    this.sharedGeo.push(poleGeo);
+    const pole = new THREE.Mesh(poleGeo, whiteMat);
+    pole.position.y = 1.12;
+    grp.add(pole);
+    const barVGeo = new THREE.BoxGeometry(0.12, 0.44, 0.12);
+    const barHGeo = new THREE.BoxGeometry(0.44, 0.12, 0.12);
+    this.sharedGeo.push(barVGeo, barHGeo);
+    const barV = new THREE.Mesh(barVGeo, whiteMat);
+    barV.position.y = 1.5;
+    grp.add(barV);
+    const barH = new THREE.Mesh(barHGeo, whiteMat);
+    barH.position.y = 1.5;
+    grp.add(barH);
+    // A second cross rotated 90° so the plus is visible from the sides too.
+    const barD = new THREE.Mesh(barHGeo, whiteMat);
+    barD.position.y = 1.5;
+    barD.rotation.y = Math.PI / 2;
+    grp.add(barD);
+
+    return grp;
+  }
+
+  private syncBuoys(t: number): void {
+    if (!this.scene) {
+      return;
+    }
+    const seen = new Set<string>();
+    for (const buoy of this.buoys) {
+      seen.add(buoy.id);
+      let g = this.buoyMeshes.get(buoy.id);
+      if (!g) {
+        g = this.makeBuoy();
+        this.buoyMeshes.set(buoy.id, g);
+        this.scene.add(g);
+      }
+      const wy = this.waveHeight(buoy.x, buoy.y, t);
+      g.position.set(buoy.x, wy - 0.12, buoy.y);
+      g.rotation.y = t * 0.5; // slow spin keeps the "+" readable
+    }
+    for (const [id, g] of this.buoyMeshes) {
+      if (!seen.has(id)) {
+        this.scene.remove(g);
+        this.buoyMeshes.delete(id);
+      }
+    }
+  }
+
+  // Draw the top compass strip: coloured dots for boats/islands/buoys placed by
+  // their bearing relative to the player's heading (dead ahead = centre).
+  private drawCompass(player: BoatState | undefined): void {
+    const ctx = this.compassCtx;
+    const cv = this.compassCanvas;
+    if (!ctx || !cv || !player) {
+      return;
+    }
+    const W = this.compassW;
+    const H = this.COMPASS_H;
+    const dpr = this.compassDpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+
+    const barY = 8;
+    const barH = 24;
+    const cxBar = W / 2;
+    // Background strip.
+    ctx.fillStyle = 'rgba(6, 20, 32, 0.42)';
+    this.roundRectPath(ctx, 8, barY, W - 16, barH, 12);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    const span = 360; // full circle mapped across the strip (game-style compass)
+    const half = span / 2;
+    const usable = W / 2 - 22;
+    const heading = player.heading;
+    const midY = barY + barH / 2;
+
+    // Faint tick marks every 45°.
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.14)';
+    ctx.lineWidth = 1;
+    for (let d = -180; d <= 180; d += 45) {
+      const x = cxBar + (d / half) * usable;
+      const big = d === 0;
+      ctx.beginPath();
+      ctx.moveTo(x, barY + (big ? 3 : 6));
+      ctx.lineTo(x, barY + barH - (big ? 3 : 6));
+      ctx.stroke();
+    }
+
+    const plot = (tx: number, ty: number, color: string, r: number) => {
+      const dx = tx - player.x;
+      const dy = ty - player.y;
+      if (dx === 0 && dy === 0) {
+        return;
+      }
+      let rel = (Math.atan2(dy, dx) * 180) / Math.PI - heading;
+      while (rel > 180) rel -= 360;
+      while (rel < -180) rel += 360;
+      if (Math.abs(rel) > half) {
+        return;
+      }
+      const x = cxBar + (rel / half) * usable;
+      ctx.beginPath();
+      ctx.arc(x, midY, r + 1.5, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(x, midY, r, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+    };
+
+    // Islands (yellow) — plotted at their centroid.
+    for (const island of this.islands) {
+      if (!island.points || island.points.length < 3) {
+        continue;
+      }
+      let ix = 0;
+      let iy = 0;
+      for (const p of island.points) {
+        ix += p.x;
+        iy += p.y;
+      }
+      plot(ix / island.points.length, iy / island.points.length, '#ffd24a', 4);
+    }
+    // Buoys (green).
+    for (const buoy of this.buoys) {
+      plot(buoy.x, buoy.y, '#3ee07f', 4);
+    }
+    // Other boats (red).
+    for (const boat of this.boats) {
+      if (boat.boatId === this.playerBoatId) {
+        continue;
+      }
+      plot(boat.x, boat.y, '#ff5a4d', 4.5);
+    }
+
+    // Forward marker (a small white triangle at the centre).
+    ctx.beginPath();
+    ctx.moveTo(cxBar, barY - 1);
+    ctx.lineTo(cxBar - 6, barY - 8);
+    ctx.lineTo(cxBar + 6, barY - 8);
+    ctx.closePath();
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+  }
+
+  private roundRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
+    const rr = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + rr, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rr);
+    ctx.arcTo(x + w, y + h, x, y + h, rr);
+    ctx.arcTo(x, y + h, x, y, rr);
+    ctx.arcTo(x, y, x + w, y, rr);
+    ctx.closePath();
   }
 
   private syncBoats(t: number): void {
@@ -1298,7 +1537,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     }
     this.windGeo = new THREE.BufferGeometry();
     this.windGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 2 * 3), 3));
-    const mat = new THREE.LineBasicMaterial({ color: 0xdfeefc, transparent: true, opacity: 0.16 });
+    const mat = new THREE.LineBasicMaterial({ color: 0xf0f8ff, transparent: true, opacity: 0.34 });
     this.sharedMat.push(mat);
     this.windStreaks = new THREE.LineSegments(this.windGeo, mat);
     this.windStreaks.frustumCulled = false;
@@ -1310,10 +1549,11 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       return;
     }
     const rad = (this.windDirection * Math.PI) / 180;
-    // Gentle breeze: slow drift, short streaks. Each gust wanders a little to the
-    // side (a slowly varying heading) so they curl instead of racing dead straight.
-    const speed = 1.6 + this.windStrength * 0.35;
-    const streak = 0.45 + this.windStrength * 0.06;
+    // Fresh breeze: visible but calm drift, moderate streaks. Each gust wanders a
+    // little to the side (a slowly varying heading) so they curl instead of
+    // racing dead straight like hyperspace.
+    const speed = 3 + this.windStrength * 0.7;
+    const streak = 0.8 + this.windStrength * 0.13;
     const half = this.WIND_BOX / 2;
     const pos = this.windGeo.attributes['position'].array as Float32Array;
     const n = this.WIND_COUNT;
@@ -1356,6 +1596,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     this.ensureWorldBounds();
     this.ensureWindStreaks();
     this.syncBoats(t);
+    this.syncBuoys(t);
 
     // Recentre the water on the player and displace its vertices for real waves.
     const p = this.playerPos();
@@ -1432,5 +1673,6 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     this.camera.lookAt(this.camLook);
 
     this.renderer.render(this.scene, this.camera);
+    this.drawCompass(player);
   }
 }
