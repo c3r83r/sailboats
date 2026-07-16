@@ -309,13 +309,13 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     const xStern = -1.2;
     const xBow = 1.42;
 
-    // A long, slim hull (not based on any one boat): fine entry at the bow,
-    // moderate beam carried a touch aft, clean transom.
-    const beamCtrl: [number, number][] = [[0, 0.27], [0.14, 0.32], [0.38, 0.37], [0.56, 0.38], [0.74, 0.35], [0.88, 0.24], [0.97, 0.07], [1, 0.0]];
+    // A long hull, now beamier and lower-freeboard: fine entry at the bow,
+    // generous beam carried aft, low topsides.
+    const beamCtrl: [number, number][] = [[0, 0.33], [0.14, 0.39], [0.38, 0.45], [0.56, 0.46], [0.74, 0.43], [0.88, 0.3], [0.97, 0.09], [1, 0.0]];
     const beam = (t: number) => this.profile(beamCtrl, t);
-    const deckY = (t: number) => 0.46 + 0.16 * Math.pow(t, 1.8) + 0.05 * Math.pow(1 - t, 2.2);
+    const deckY = (t: number) => 0.27 + 0.11 * Math.pow(t, 1.8) + 0.03 * Math.pow(1 - t, 2.2);
     // Shallow, rounded canoe body — the real draught comes from the fin keel below.
-    const bottomY = (t: number) => -0.16 * Math.sin(Math.PI * Math.min(1, Math.max(0, t * 0.82 + 0.12)));
+    const bottomY = (t: number) => -0.15 * Math.sin(Math.PI * Math.min(1, Math.max(0, t * 0.82 + 0.12)));
 
     const rings: THREE.Vector3[][] = [];
     for (let i = 0; i < nSt; i++) {
@@ -1024,6 +1024,10 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       const show = !capsized && rolled > 0.02;
       jib.visible = show;
       if (show) {
+        // Butterfly / goose-wing: on a run the jib can be winged to the side it
+        // is actually sheeted (jib.side), opposite the main, instead of always
+        // following the heel-based leeward side.
+        const jibSide = c && c.jib.side ? c.jib.side : lee;
         // Tack lifted well clear of the foredeck so the sail can never sweep
         // down through the hull; the luff still rides the forestay.
         const tack = new THREE.Vector3(1.3, 0.55, 0);
@@ -1033,18 +1037,19 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
         const fullClew = new THREE.Vector3(
           1.3 - Math.cos(jibAngle) * jibFoot,
           0.82,
-          lee * Math.sin(jibAngle) * jibFoot,
+          jibSide * Math.sin(jibAngle) * jibFoot,
         );
         // Roller furl: clew rolls in toward the tack/stay as the sail furls.
         const clew = tack.clone().lerp(fullClew, rolled);
-        const power = rolled * (0.35 + 0.65 * jibSheet);
-        const belly = jibLuff ? 0.05 : 0.3 * power;
+        const power = rolled * (0.4 + 0.6 * jibSheet);
+        // A fuller, more convex jib than the main.
+        const belly = jibLuff ? 0.06 : 0.46 * power;
         const flutter = jibLuff ? 0.18 * gust : 0.03;
-        this.updateSail(jib, tack, head, clew, lee, belly, flutter, t + 1.7, 0.22);
+        this.updateSail(jib, tack, head, clew, jibSide, belly, flutter, t + 1.7, 0.26);
         // Jib sheet: from the clew back to a fairlead on the side deck.
         if (jibSheetLine) {
           jibSheetLine.visible = true;
-          this.setLine(jibSheetLine, clew, new THREE.Vector3(-0.05, 0.46, lee * 0.32));
+          this.setLine(jibSheetLine, clew, new THREE.Vector3(-0.05, 0.46, jibSide * 0.32));
         }
       } else if (jibSheetLine) {
         jibSheetLine.visible = false;
