@@ -91,6 +91,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
 
   private sharedGeo: THREE.BufferGeometry[] = [];
   private sharedMat: THREE.Material[] = [];
+  private sailTexture?: THREE.CanvasTexture;
 
   // Manual camera orbit around the boat, driven by the 9 / 0 keys.
   private orbit = 0; // azimuth offset (radians) added to the astern view
@@ -161,6 +162,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     this.resizeObserver?.disconnect();
     this.sharedGeo.forEach((g) => g.dispose());
     this.sharedMat.forEach((m) => m.dispose());
+    this.sailTexture?.dispose();
     this.waterGeo?.dispose();
     this.renderer?.dispose();
     if (this.renderer && this.hostRef) {
@@ -309,7 +311,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
 
     // A long, slim hull (not based on any one boat): fine entry at the bow,
     // moderate beam carried a touch aft, clean transom.
-    const beamCtrl: [number, number][] = [[0, 0.27], [0.14, 0.32], [0.38, 0.37], [0.56, 0.38], [0.74, 0.35], [0.88, 0.24], [0.96, 0.1], [1, 0.02]];
+    const beamCtrl: [number, number][] = [[0, 0.27], [0.14, 0.32], [0.38, 0.37], [0.56, 0.38], [0.74, 0.35], [0.88, 0.24], [0.97, 0.07], [1, 0.0]];
     const beam = (t: number) => this.profile(beamCtrl, t);
     const deckY = (t: number) => 0.46 + 0.16 * Math.pow(t, 1.8) + 0.05 * Math.pow(1 - t, 2.2);
     // Shallow, rounded canoe body — the real draught comes from the fin keel below.
@@ -346,12 +348,13 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
         tri(a, c, d);
       }
     }
-    // Transom cap at the stern (fan from the ring centre).
+    // Transom cap at the stern (fan from the ring centre), closed across the top.
     const stern = rings[0];
     const sc = new THREE.Vector3(xStern, (stern[0].y + stern[(nSec - 1) / 2 | 0].y) * 0.5, 0);
     for (let j = 0; j < nSec - 1; j++) {
       tri(sc, stern[j + 1], stern[j]);
     }
+    tri(sc, stern[0], stern[nSec - 1]); // close the deck-line edge of the transom
 
     const shellGeo = new THREE.BufferGeometry();
     shellGeo.setAttribute('position', new THREE.Float32BufferAttribute(shell, 3));
@@ -384,15 +387,32 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     rudder.position.set(-1.02, -0.05, 0);
     grp.add(rudder);
 
-    // Deck: pale non-skid deck spanning the port and starboard deck edges.
+    // Deck: pale non-skid deck. Over the cockpit only the side decks are drawn,
+    // leaving the centre open so the recessed cockpit well shows through.
+    const cxA = -1.06;
+    const cxF = -0.3;
+    const zc = 0.22;
+    const inCockpit = (x: number) => x > cxA && x < cxF;
     const deck: number[] = [];
+    const quad = (a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, d: THREE.Vector3) => {
+      deck.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+      deck.push(a.x, a.y, a.z, c.x, c.y, c.z, d.x, d.y, d.z);
+    };
     for (let i = 0; i < nSt - 1; i++) {
-      const p0 = rings[i][0];
+      const p0 = rings[i][0]; // +z deck edge
       const p1 = rings[i + 1][0];
-      const s0 = rings[i][nSec - 1];
+      const s0 = rings[i][nSec - 1]; // -z deck edge
       const s1 = rings[i + 1][nSec - 1];
-      deck.push(p0.x, p0.y, p0.z, p1.x, p1.y, p1.z, s1.x, s1.y, s1.z);
-      deck.push(p0.x, p0.y, p0.z, s1.x, s1.y, s1.z, s0.x, s0.y, s0.z);
+      if (inCockpit(p0.x) && inCockpit(p1.x)) {
+        const ip0 = new THREE.Vector3(p0.x, p0.y, zc);
+        const ip1 = new THREE.Vector3(p1.x, p1.y, zc);
+        const is0 = new THREE.Vector3(s0.x, s0.y, -zc);
+        const is1 = new THREE.Vector3(s1.x, s1.y, -zc);
+        quad(p0, p1, ip1, ip0); // +z side deck (outboard of coaming)
+        quad(is0, is1, s1, s0); // -z side deck
+      } else {
+        quad(p0, p1, s1, s0);
+      }
     }
     const deckGeo = new THREE.BufferGeometry();
     deckGeo.setAttribute('position', new THREE.Float32BufferAttribute(deck, 3));
@@ -431,36 +451,56 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     forehatch.position.set(0.6, deckY(0.72) + 0.03, 0);
     grp.add(forehatch);
 
-    // Cockpit sole: a recessed dark panel aft of the cabin.
-    const cockGeo = new THREE.BoxGeometry(0.72, 0.06, 0.52);
-    this.sharedGeo.push(cockGeo);
-    const cockMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#5a4a34'), roughness: 0.9 });
+    // Cockpit well: a recess in the deck with a lower sole and coaming walls, so
+    // the helm sits down inside the boat rather than on a flat panel.
+    const soleY = deckY(0.18) - 0.17;
+    const coamTop = deckY(0.18);
+    const cockMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#4a3c26'), roughness: 0.92 });
     this.sharedMat.push(cockMat);
-    const cockpit = new THREE.Mesh(cockGeo, cockMat);
-    const cockY = deckY(0.2) - 0.02;
-    cockpit.position.set(-0.72, cockY, 0);
-    grp.add(cockpit);
+    const soleGeo = new THREE.BoxGeometry(cxF - cxA - 0.02, 0.04, zc * 2 - 0.02);
+    this.sharedGeo.push(soleGeo);
+    const sole = new THREE.Mesh(soleGeo, cockMat);
+    sole.position.set((cxA + cxF) / 2, soleY, 0);
+    grp.add(sole);
+    // Coaming walls from the sole up to deck level.
+    const coamMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#e7e3d9'), roughness: 0.55, side: THREE.DoubleSide });
+    this.sharedMat.push(coamMat);
+    const wallH = coamTop - soleY;
+    const sideWallGeo = new THREE.BoxGeometry(cxF - cxA, wallH, 0.02);
+    this.sharedGeo.push(sideWallGeo);
+    for (const z of [zc, -zc]) {
+      const w = new THREE.Mesh(sideWallGeo, coamMat);
+      w.position.set((cxA + cxF) / 2, (soleY + coamTop) / 2, z);
+      grp.add(w);
+    }
+    const endWallGeo = new THREE.BoxGeometry(0.02, wallH, zc * 2);
+    this.sharedGeo.push(endWallGeo);
+    for (const x of [cxA, cxF]) {
+      const w = new THREE.Mesh(endWallGeo, coamMat);
+      w.position.set(x, (soleY + coamTop) / 2, 0);
+      grp.add(w);
+    }
 
-    // Deck details: steering pedestal + wheel, primary winches and a bow cleat.
+    // Deck details: steering pedestal + wheel (down in the well), primary winches.
     const metalMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#c6ccd2'), roughness: 0.3, metalness: 0.8 });
     this.sharedMat.push(metalMat);
-    const deckTopY = deckY(0.2);
+    const deckTopY = deckY(0.24);
 
-    // Pedestal.
-    const pedGeo = new THREE.CylinderGeometry(0.05, 0.06, 0.26, 8);
-    pedGeo.translate(0, 0.13, 0);
+    // Pedestal rises from the cockpit sole.
+    const pedGeo = new THREE.CylinderGeometry(0.05, 0.06, 0.24, 8);
+    pedGeo.translate(0, 0.12, 0);
     this.sharedGeo.push(pedGeo);
     const pedestal = new THREE.Mesh(pedGeo, metalMat);
-    pedestal.position.set(-0.62, deckTopY, 0);
+    pedestal.position.set(-0.6, soleY + 0.02, 0);
     grp.add(pedestal);
 
     // Wheel: a ring (athwartships) with a hub and spokes on the pedestal.
-    const wheelR = 0.17;
-    const wheelGeo = new THREE.TorusGeometry(wheelR, 0.014, 6, 20);
+    const wheelR = 0.16;
+    const wheelGeo = new THREE.TorusGeometry(wheelR, 0.013, 6, 20);
     wheelGeo.rotateY(Math.PI / 2); // face aft (plane across the boat)
     this.sharedGeo.push(wheelGeo);
     const wheel = new THREE.Mesh(wheelGeo, metalMat);
-    wheel.position.set(-0.62, deckTopY + 0.32, 0);
+    wheel.position.set(-0.6, soleY + 0.3, 0);
     grp.add(wheel);
     const spokeGeo = new THREE.CylinderGeometry(0.006, 0.006, wheelR * 2, 4);
     this.sharedGeo.push(spokeGeo);
@@ -471,13 +511,13 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       grp.add(spoke);
     }
 
-    // Primary winches either side of the cockpit.
+    // Primary winches on the side decks either side of the cockpit.
     const winchGeo = new THREE.CylinderGeometry(0.05, 0.045, 0.07, 10);
     winchGeo.translate(0, 0.035, 0);
     this.sharedGeo.push(winchGeo);
     for (const sign of [1, -1]) {
       const winch = new THREE.Mesh(winchGeo, metalMat);
-      winch.position.set(-0.42, deckTopY, sign * (beam(0.24) - 0.08));
+      winch.position.set(-0.42, deckTopY, sign * (beam(0.24) - 0.06));
       grp.add(winch);
     }
 
@@ -576,23 +616,40 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     boom.name = 'boom';
     rig.add(boom);
 
-    // Sail material (shared): soft canvas white, lit on both faces.
+    // Sail material (shared): canvas white with a batten/panel texture.
     const sailMat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color('#f4f8ff'),
+      color: new THREE.Color('#ffffff'),
       roughness: 0.9,
       side: THREE.DoubleSide,
+      map: this.getSailTexture(),
     });
     this.sharedMat.push(sailMat);
 
     // Mainsail (grot) and jib (fok): segmented planes whose vertices are placed
     // in rig-local space every frame so they belly under wind or flap when luffing.
-    const main = this.makeSailMesh(sailMat, 6, 9);
+    const main = this.makeSailMesh(sailMat, 8, 14);
     main.name = 'main';
     rig.add(main);
 
-    const jib = this.makeSailMesh(sailMat, 5, 8);
+    const jib = this.makeSailMesh(sailMat, 6, 12);
     jib.name = 'jib';
     rig.add(jib);
+
+    // Masthead burgee: a small triangular pennant coloured per-boat (same hue as
+    // the 2D flag). Coloured and aimed downwind each frame in syncBoats.
+    const flagMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#ffd166'), roughness: 0.6, side: THREE.DoubleSide });
+    const flagGeo = new THREE.BufferGeometry();
+    flagGeo.setAttribute('position', new THREE.Float32BufferAttribute([
+      0, 0.07, 0,
+      0, -0.07, 0,
+      -0.34, 0.0, 0,
+    ], 3));
+    flagGeo.computeVertexNormals();
+    this.sharedGeo.push(flagGeo);
+    const flag = new THREE.Mesh(flagGeo, flagMat);
+    flag.name = 'flag';
+    flag.position.set(0.25, 3.74, 0);
+    rig.add(flag);
 
     // Standing rigging (olinowanie stałe): forestay, backstay, cap shrouds and
     // spreaders. Fixed wires that hold the mast up; they heel with the boat.
@@ -667,6 +724,52 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
 
     this.scene?.add(group);
     return group;
+  }
+
+  // Sail cloth texture: horizontal panel seams (bryty) plus a few heavier batten
+  // lines toward the leech (listwy). Shared by all sails.
+  private getSailTexture(): THREE.CanvasTexture {
+    if (this.sailTexture) {
+      return this.sailTexture;
+    }
+    const c = document.createElement('canvas');
+    c.width = 128;
+    c.height = 256;
+    const ctx = c.getContext('2d')!;
+    ctx.fillStyle = '#f5f8fc';
+    ctx.fillRect(0, 0, 128, 256);
+    // Panel seams: faint horizontal cloth panels across the whole sail.
+    ctx.strokeStyle = 'rgba(120, 140, 160, 0.18)';
+    ctx.lineWidth = 1;
+    for (let y = 16; y < 256; y += 22) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(128, y);
+      ctx.stroke();
+    }
+    // Battens: heavier lines from ~30% chord out to the leech (canvas right edge).
+    ctx.strokeStyle = 'rgba(70, 92, 112, 0.45)';
+    ctx.lineWidth = 3;
+    for (const v of [0.2, 0.4, 0.6, 0.8]) {
+      const y = (1 - v) * 256; // texture flipY => canvas top is the head (v=1)
+      ctx.beginPath();
+      ctx.moveTo(38, y);
+      ctx.lineTo(128, y);
+      ctx.stroke();
+    }
+    const tex = new THREE.CanvasTexture(c);
+    tex.anisotropy = 4;
+    this.sailTexture = tex;
+    return tex;
+  }
+
+  // Deterministic per-boat flag hue (matches the 2D burgee colour).
+  private flagHue(boatId: string): number {
+    let hash = 0;
+    for (let i = 0; i < boatId.length; i++) {
+      hash = (hash * 31 + boatId.charCodeAt(i)) >>> 0;
+    }
+    return hash % 360;
   }
 
   // A flat segmented plane we later reshape into a bellied/luffing sail. The
@@ -811,6 +914,14 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       const rig = g.getObjectByName('rig') as THREE.Group | undefined;
       if (rig) {
         this.updateRig(boat, rig, heelDeg, capsized, t);
+        // Masthead burgee: per-boat colour (matches 2D), streaming downwind.
+        const flag = rig.getObjectByName('flag') as THREE.Mesh | undefined;
+        if (flag) {
+          const fm = flag.material as THREE.MeshStandardMaterial;
+          fm.color.setHSL(this.flagHue(boat.boatId) / 360, 0.82, 0.56);
+          flag.rotation.y = ((boat.heading - this.windDirection) * Math.PI) / 180;
+          flag.rotation.z = Math.sin(t * 6 + boat.x) * 0.07; // gentle flutter
+        }
       }
 
       const anchor = g.getObjectByName('anchor');
