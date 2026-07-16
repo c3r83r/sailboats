@@ -711,6 +711,13 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     const mainSheet = new THREE.Line(mainSheetGeo, sheetMat);
     mainSheet.name = 'mainSheet';
     rig.add(mainSheet);
+    // Outhaul: the line holding the sail's clew out to the fixed end of the boom.
+    // When reefed the clew sits inboard, so this line spans the remaining gap.
+    const mainOuthaulGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+    this.sharedGeo.push(mainOuthaulGeo);
+    const mainOuthaul = new THREE.Line(mainOuthaulGeo, sheetMat);
+    mainOuthaul.name = 'mainOuthaul';
+    rig.add(mainOuthaul);
     const jibSheetGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
     this.sharedGeo.push(jibSheetGeo);
     const jibSheet = new THREE.Line(jibSheetGeo, sheetMat);
@@ -995,30 +1002,28 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     const boom = rig.getObjectByName('boom') as THREE.Mesh | undefined;
     const jib = rig.getObjectByName('jib') as THREE.Mesh | undefined;
     const mainSheetLine = rig.getObjectByName('mainSheet') as THREE.Line | undefined;
+    const mainOuthaulLine = rig.getObjectByName('mainOuthaul') as THREE.Line | undefined;
     const jibSheetLine = rig.getObjectByName('jibSheet') as THREE.Line | undefined;
 
     // ---- Mainsail (grot) ----
     if (main) {
       const show = !capsized && mainDeploy > 0.05;
       main.visible = show;
-      // The boom is a fixed spar: it stays on the mast even when the sail is
-      // furled (it just rests near the centreline).
       const boomY = 0.62;
-      // A mainsail is a roughly fixed triangle of cloth: reefing/furling shrinks
-      // it along BOTH the hoist and the boom together, so it keeps its shape
-      // rather than just getting taller. Foot and hoist share one reef factor.
+      // The boom is a fixed-length alloy spar hinged at the gooseneck — it never
+      // shrinks. Reefing only pulls the sail's CLEW inboard along the boom on
+      // the outhaul, so the cloth gets smaller while the spar stays full length.
       const reef = 0.5 + 0.5 * mainDeploy;
-      const foot = 1.25 * reef;
+      const boomLen = 1.25;
       const boomAngle = show ? 0.12 + (1 - mainSheet) * 0.95 : 0.1;
       const tack = new THREE.Vector3(0.25, boomY, 0);
-      const clew = new THREE.Vector3(
-        0.25 - Math.cos(boomAngle) * foot,
-        boomY,
-        lee * Math.sin(boomAngle) * foot,
-      );
+      const boomDir = new THREE.Vector3(-Math.cos(boomAngle), 0, lee * Math.sin(boomAngle));
+      const boomEnd = tack.clone().add(boomDir.clone().multiplyScalar(boomLen));
+      // Clew rides a fraction of the way out the boom; the outhaul spans the rest.
+      const clew = tack.clone().add(boomDir.clone().multiplyScalar(boomLen * reef));
       if (boom) {
         boom.visible = !capsized;
-        this.alignSpar(boom, tack, clew);
+        this.alignSpar(boom, tack, boomEnd);
       }
       if (show) {
         // Tall, high-aspect main running well up the taller mast, with a
@@ -1029,13 +1034,23 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
         const belly = mainLuff ? 0.05 : 0.36 * power * camberScale;
         const flutter = mainLuff ? 0.14 * gust : 0.02;
         this.updateSail(main, tack, head, clew, lee, belly, flutter, t, 0.12, 0.22);
-        // Mainsheet: from the boom clew down to the traveller on the cockpit sole.
+        // Outhaul: clew out to the fixed boom end (visible gap only when reefed).
+        if (mainOuthaulLine) {
+          mainOuthaulLine.visible = true;
+          this.setLine(mainOuthaulLine, clew, boomEnd);
+        }
+        // Mainsheet: from the fixed boom end down to the traveller near the stern.
         if (mainSheetLine) {
           mainSheetLine.visible = true;
-          this.setLine(mainSheetLine, clew, new THREE.Vector3(-0.5, 0.42, 0));
+          this.setLine(mainSheetLine, boomEnd, new THREE.Vector3(-1.05, 0.42, 0));
         }
-      } else if (mainSheetLine) {
-        mainSheetLine.visible = false;
+      } else {
+        if (mainSheetLine) {
+          mainSheetLine.visible = false;
+        }
+        if (mainOuthaulLine) {
+          mainOuthaulLine.visible = false;
+        }
       }
     }
 
