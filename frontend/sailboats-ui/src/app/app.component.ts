@@ -72,7 +72,7 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
               <h3>{{ col.label }}</h3>
               <ul class="lake-list">
                 <li
-                  *ngFor="let l of lakesOf(col.size)"
+                  *ngFor="let l of lakesOf(col.size); trackBy: trackByLakeId"
                   [class.current]="l.id === currentLakeId"
                   (click)="joinLake(l.id)">
                   <span class="ll-name">{{ l.name }}</span>
@@ -1334,6 +1334,14 @@ export class AppComponent implements OnInit, OnDestroy {
 
   lakesOf(size: LakeSize): LakeSummary[] {
     return this.lakes.filter((lake) => lake.size === size);
+  }
+
+  // Keeps <li> DOM nodes stable across the ~20Hz snapshot-driven `lakes` array
+  // replacements (each snapshot deserializes brand-new lake objects), so a real
+  // mouse click's mousedown/mouseup pair isn't interrupted by Angular tearing
+  // down and recreating the element mid-gesture.
+  trackByLakeId(_index: number, lake: LakeSummary): string {
+    return lake.id;
   }
 
   joinLake(lakeId: string): void {
