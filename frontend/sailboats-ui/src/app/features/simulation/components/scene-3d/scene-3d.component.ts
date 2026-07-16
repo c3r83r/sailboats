@@ -323,10 +323,12 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     const along = wx * dx + wz * dz;
     const cross = -wx * dz + wz * dx;
     const gust = Math.min(1.6, Math.max(0.6, this.windStrength / 5));
+    // Gentle, low-amplitude swell that moves slowly, so the surface undulates
+    // calmly instead of shimmering/scintillating in the eye.
     return (
-      0.16 * gust * Math.sin(along * 0.55 - t * 1.6) +
-      0.1 * gust * Math.sin(along * 1.1 + cross * 0.4 - t * 2.3) +
-      0.05 * Math.sin(cross * 0.9 + t * 1.1)
+      0.075 * gust * Math.sin(along * 0.42 - t * 1.05) +
+      0.038 * gust * Math.sin(along * 0.8 + cross * 0.3 - t * 1.5) +
+      0.02 * Math.sin(cross * 0.7 + t * 0.7)
     );
   }
 
@@ -339,8 +341,8 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     this.waterBaseZ = Float32Array.from(pos.array as Float32Array);
     const mat = new THREE.MeshStandardMaterial({
       color: new THREE.Color('#1f79a6'),
-      roughness: 0.55,
-      metalness: 0.15,
+      roughness: 0.78,
+      metalness: 0.04,
       transparent: true,
       opacity: 0.96,
     });
@@ -650,32 +652,57 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     for (const p of points) {
       r = Math.max(r, Math.hypot(p.x - cx, p.y - cy));
     }
-    const peakH = Math.min(1.6, Math.max(0.5, r * 0.28));
-    const scales = [1.0, 0.72, 0.46, 0.22];
+    // Bigger islands rise higher: small ones stay low green hills, large ones
+    // become rocky, even snow-capped little mountains.
+    const peakH = THREE.MathUtils.clamp(r * 0.5, 0.7, 3.2);
+    // More rings => a smoother, more detailed mound with room for relief.
+    const scales = [1.0, 0.85, 0.7, 0.55, 0.4, 0.26, 0.13];
     const dome = (s: number) => 1 - (3 * s * s - 2 * s * s * s); // 1 at centre, 0 at shore
+    // Ruggedness grows with island size so hills gain real relief and secondary
+    // ridges/peaks, while tiny islets stay smooth.
+    const relief = THREE.MathUtils.clamp(peakH * 0.5, 0.2, 1.8);
+    const noiseScale = 0.55;
+
     const sand = new THREE.Color('#d8c68f');
     const grass = new THREE.Color('#6f9350');
+    const rock = new THREE.Color('#8b857c');
+    const snow = new THREE.Color('#eef2f6');
 
     const positions: number[] = [];
     const colors: number[] = [];
     const pushV = (x: number, y: number, z: number) => {
       positions.push(x, y, z);
-      const tt = THREE.MathUtils.clamp(y / peakH, 0, 1);
-      const c = sand.clone().lerp(grass, THREE.MathUtils.smoothstep(tt, 0.06, 0.5));
+      // Colour by absolute height: sand at the water, grass on the slopes, bare
+      // rock high up and snow only on the tallest peaks.
+      const c = sand.clone();
+      c.lerp(grass, THREE.MathUtils.smoothstep(y, 0.08, 0.5));
+      c.lerp(rock, THREE.MathUtils.smoothstep(y, 1.3, 2.2));
+      c.lerp(snow, THREE.MathUtils.smoothstep(y, 2.7, 3.4));
       colors.push(c.r, c.g, c.b);
+    };
+
+    // Mound height at a scaled ring position, with fbm relief that fades out to
+    // zero at the shoreline so the coast stays clean.
+    const heightAt = (sc: number, wx: number, wz: number): number => {
+      const base = peakH * dome(sc);
+      const inland = 1 - sc; // 0 at shore, ~0.87 at the centre
+      const nz = this.fbm2(wx * noiseScale, wz * noiseScale) - 0.5; // -0.5..0.5
+      return base + nz * 2 * relief * inland * inland;
     };
 
     const ringStart: number[] = [];
     for (let ri = 0; ri < scales.length; ri++) {
       ringStart.push(positions.length / 3);
       const sc = scales[ri];
-      const y = ri === 0 ? -0.06 : peakH * dome(sc); // shore dips just under water
       for (let j = 0; j < n; j++) {
-        pushV((points[j].x - cx) * sc, y, (points[j].y - cy) * sc);
+        const lx = (points[j].x - cx) * sc;
+        const lz = (points[j].y - cy) * sc;
+        const y = ri === 0 ? -0.06 : heightAt(sc, lx + cx, lz + cy); // shore dips under water
+        pushV(lx, y, lz);
       }
     }
     const peakIndex = positions.length / 3;
-    pushV(0, peakH, 0);
+    pushV(0, peakH + (this.fbm2(cx * noiseScale, cy * noiseScale) - 0.3) * relief, 0);
 
     const indices: number[] = [];
     for (let ri = 0; ri < scales.length - 1; ri++) {
@@ -699,6 +726,40 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     geo.setIndex(indices);
     geo.computeVertexNormals();
     return geo;
+  }
+
+  // 2D value-noise fbm (0..1), used to give island terrain natural relief.
+  private hash2(x: number, y: number): number {
+    const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+    return s - Math.floor(s);
+  }
+
+  private valueNoise2(x: number, y: number): number {
+    const xi = Math.floor(x);
+    const yi = Math.floor(y);
+    const xf = x - xi;
+    const yf = y - yi;
+    const u = xf * xf * (3 - 2 * xf);
+    const v = yf * yf * (3 - 2 * yf);
+    const a = this.hash2(xi, yi);
+    const b = this.hash2(xi + 1, yi);
+    const c = this.hash2(xi, yi + 1);
+    const d = this.hash2(xi + 1, yi + 1);
+    return THREE.MathUtils.lerp(THREE.MathUtils.lerp(a, b, u), THREE.MathUtils.lerp(c, d, u), v);
+  }
+
+  private fbm2(x: number, y: number): number {
+    let amp = 0.5;
+    let freq = 1;
+    let sum = 0;
+    let norm = 0;
+    for (let o = 0; o < 4; o++) {
+      sum += amp * this.valueNoise2(x * freq, y * freq);
+      norm += amp;
+      amp *= 0.5;
+      freq *= 2;
+    }
+    return sum / norm;
   }
 
   // Interpolate a value from [t, value] control points (t ascending, 0..1).
