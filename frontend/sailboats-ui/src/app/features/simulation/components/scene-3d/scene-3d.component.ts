@@ -959,14 +959,17 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     const baseMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#3a2c1a'), roughness: 0.85 });
     this.sharedMat.push(barrelMat, baseMat);
 
-    const barrelLen = 0.24;
+    const barrelLen = 0.26;
+    // How far the muzzle pokes past the ship's outline — kept small so most of
+    // the (now thicker) barrel sits inboard on the deck.
+    const protrude = 0.06;
     // Barrel modelled along +X with the breech at the pivot origin, so raising
     // the pivot lifts the muzzle.
-    const barrelGeo = new THREE.CylinderGeometry(0.024, 0.032, barrelLen, 10);
+    const barrelGeo = new THREE.CylinderGeometry(0.046, 0.058, barrelLen, 12);
     barrelGeo.rotateZ(-Math.PI / 2);
     barrelGeo.translate(barrelLen / 2, 0, 0);
     this.sharedGeo.push(barrelGeo);
-    const baseGeo = new THREE.BoxGeometry(0.1, 0.045, 0.075);
+    const baseGeo = new THREE.BoxGeometry(0.13, 0.05, 0.1);
     this.sharedGeo.push(baseGeo);
 
     const pivots: THREE.Object3D[] = [];
@@ -979,22 +982,24 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       gun.add(base);
       const pivot = new THREE.Group();
       pivot.name = 'cannonPivot';
-      pivot.position.set(0.02, 0.055, 0);
+      pivot.position.set(0, 0.07, 0);
       pivot.add(new THREE.Mesh(barrelGeo, barrelMat));
       gun.add(pivot);
       pivots.push(pivot);
       grp.add(gun);
     };
 
-    // Broadside guns: port (+z, aim +z) and starboard (-z, aim -z).
+    // Broadside guns: seated inboard so the barrel lies across the side deck and
+    // only its muzzle clears the rail. port (+z, aim +z) / starboard (-z, aim -z).
     for (const t of [0.34, 0.6]) {
       const x = xStern + (xBow - xStern) * t;
-      buildGun(x, beam(t) - 0.05, deckY(t), -Math.PI / 2);
-      buildGun(x, -(beam(t) - 0.05), deckY(t), Math.PI / 2);
+      const inboard = beam(t) - (barrelLen - protrude);
+      buildGun(x, inboard, deckY(t), -Math.PI / 2);
+      buildGun(x, -inboard, deckY(t), Math.PI / 2);
     }
-    // Bow chaser (aim +x) and stern chaser (aim -x).
-    buildGun(xBow - 0.22, 0, deckY(0.9), 0);
-    buildGun(xStern + 0.18, 0, deckY(0.08), Math.PI);
+    // Bow chaser (aim +x) and stern chaser (aim -x), muzzles just past the ends.
+    buildGun(xBow - (barrelLen - protrude), 0, deckY(0.9), 0);
+    buildGun(xStern + (barrelLen - protrude), 0, deckY(0.08), Math.PI);
 
     grp.userData['cannonPivots'] = pivots;
     return grp;
