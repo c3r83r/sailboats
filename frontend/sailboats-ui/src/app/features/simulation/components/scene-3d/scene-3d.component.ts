@@ -936,49 +936,77 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
   }
 
   // Six cannons matching the fire() sides used server-side: a single bow and
-  // stern chaser plus two broadside guns per side, mounted on small wooden
-  // carriages with their barrels poking out past the rail.
+  // stern chaser plus two broadside guns per side, mounted on chunky wooden
+  // carriages with heavy iron barrels that jut well past the rail so they read
+  // clearly from a distance.
   private makeCannons(beam: (t: number) => number, deckY: (t: number) => number, xBow: number, xStern: number): THREE.Group {
     const grp = new THREE.Group();
 
-    const barrelMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#2b2b2e'), roughness: 0.5, metalness: 0.65 });
-    const carriageMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#5c3a21'), roughness: 0.85 });
+    const barrelMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#14161a'), roughness: 0.35, metalness: 0.85 });
+    const carriageMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#6b4423'), roughness: 0.85 });
     this.sharedMat.push(barrelMat, carriageMat);
 
-    const barrelLen = 0.34;
+    const barrelLen = 0.62;
     // Pivot at the breech end (origin) so the muzzle end pokes outward once rotated.
-    const barrelGeo = new THREE.CylinderGeometry(0.028, 0.038, barrelLen, 8);
+    const barrelGeo = new THREE.CylinderGeometry(0.05, 0.07, barrelLen, 12);
     barrelGeo.translate(0, barrelLen / 2, 0);
     this.sharedGeo.push(barrelGeo);
-    const carriageGeo = new THREE.BoxGeometry(0.16, 0.09, 0.13);
+    // A cascabel knob at the breech and a muzzle ring so the barrel reads as a gun.
+    const breechGeo = new THREE.SphereGeometry(0.075, 10, 8);
+    this.sharedGeo.push(breechGeo);
+    const carriageGeo = new THREE.BoxGeometry(0.26, 0.15, 0.22);
     this.sharedGeo.push(carriageGeo);
+    // Little wheels (trucks) on the carriage sides.
+    const wheelGeo = new THREE.CylinderGeometry(0.05, 0.05, 0.04, 8);
+    wheelGeo.rotateX(Math.PI / 2);
+    this.sharedGeo.push(wheelGeo);
+
+    const buildGun = (): THREE.Group => {
+      const gun = new THREE.Group();
+      const carriage = new THREE.Mesh(carriageGeo, carriageMat);
+      carriage.position.y = 0.075;
+      gun.add(carriage);
+      for (const sx of [-1, 1]) {
+        for (const sz of [-1, 1]) {
+          const w = new THREE.Mesh(wheelGeo, barrelMat);
+          w.position.set(sx * 0.1, 0.05, sz * 0.11);
+          gun.add(w);
+        }
+      }
+      return gun;
+    };
 
     // A broadside gun: barrel points outward along local Z (port +z / stbd -z).
     const makeBroadside = (t: number, side: 1 | -1): THREE.Group => {
-      const gun = new THREE.Group();
-      gun.add(new THREE.Mesh(carriageGeo, carriageMat));
+      const gun = buildGun();
       const barrel = new THREE.Mesh(barrelGeo, barrelMat);
       barrel.rotation.x = side > 0 ? Math.PI / 2 : -Math.PI / 2;
-      barrel.position.y = 0.02;
+      barrel.position.y = 0.16;
       gun.add(barrel);
+      const breech = new THREE.Mesh(breechGeo, barrelMat);
+      breech.position.set(0, 0.16, side * -0.05);
+      gun.add(breech);
       const x = xStern + (xBow - xStern) * t;
-      gun.position.set(x, deckY(t) + 0.08, side * (beam(t) - 0.1));
+      // Sit just inboard of the rail so the muzzle juts clearly out over the water.
+      gun.position.set(x, deckY(t) + 0.02, side * (beam(t) - 0.14));
       return gun;
     };
     // A chase gun: barrel points forward (bow, +x) or aft (stern, -x).
     const makeChaser = (atBow: boolean): THREE.Group => {
-      const gun = new THREE.Group();
-      gun.add(new THREE.Mesh(carriageGeo, carriageMat));
+      const gun = buildGun();
       const barrel = new THREE.Mesh(barrelGeo, barrelMat);
       barrel.rotation.z = atBow ? -Math.PI / 2 : Math.PI / 2;
-      barrel.position.y = 0.02;
+      barrel.position.y = 0.16;
       gun.add(barrel);
-      const t = atBow ? 0.94 : 0.06;
-      gun.position.set(atBow ? xBow - 0.18 : xStern + 0.16, deckY(t) + 0.08, 0);
+      const breech = new THREE.Mesh(breechGeo, barrelMat);
+      breech.position.set(atBow ? -0.05 : 0.05, 0.16, 0);
+      gun.add(breech);
+      const t = atBow ? 0.9 : 0.08;
+      gun.position.set(atBow ? xBow - 0.28 : xStern + 0.24, deckY(t) + 0.02, 0);
       return gun;
     };
 
-    for (const t of [0.32, 0.62]) {
+    for (const t of [0.34, 0.6]) {
       grp.add(makeBroadside(t, 1));
       grp.add(makeBroadside(t, -1));
     }
