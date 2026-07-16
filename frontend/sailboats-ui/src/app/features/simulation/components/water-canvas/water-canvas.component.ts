@@ -103,6 +103,9 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
   dragging = false;
   private lastPointerX = 0;
   private lastPointerY = 0;
+  // Arrow-key pan direction (-1/0/+1 per axis) while held.
+  private panX = 0;
+  private panY = 0;
 
   // Fixed scene light for the 2.5D look: sun sits high on the upper-left, so
   // every cast shadow falls toward the lower-right by this screen-space offset.
@@ -112,6 +115,8 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
     this.setupResponsiveCanvas();
     this.initWindParticles();
     this.startAnimation();
+    window.addEventListener('keydown', this.onPanKeyDown);
+    window.addEventListener('keyup', this.onPanKeyUp);
   }
 
   ngOnChanges(): void {
@@ -274,6 +279,33 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
     this.dragging = false;
   }
 
+  // Arrow keys pan the free-look camera (in addition to click-drag). Panning only
+  // has an effect when zoomed in enough that the lake no longer fully fits.
+  private readonly onPanKeyDown = (e: KeyboardEvent): void => {
+    switch (e.key) {
+      case 'ArrowLeft': this.panX = -1; break;
+      case 'ArrowRight': this.panX = 1; break;
+      case 'ArrowUp': this.panY = -1; break;
+      case 'ArrowDown': this.panY = 1; break;
+      default: return;
+    }
+    e.preventDefault();
+    if (this.followMode) {
+      this.camX = this.playerWorldX();
+      this.camY = this.playerWorldY();
+      this.followMode = false;
+    }
+  };
+
+  private readonly onPanKeyUp = (e: KeyboardEvent): void => {
+    switch (e.key) {
+      case 'ArrowLeft': if (this.panX < 0) this.panX = 0; break;
+      case 'ArrowRight': if (this.panX > 0) this.panX = 0; break;
+      case 'ArrowUp': if (this.panY < 0) this.panY = 0; break;
+      case 'ArrowDown': if (this.panY > 0) this.panY = 0; break;
+    }
+  };
+
   resetView(): void {
     // Double-click: snap back to following the player at the default zoom.
     this.followMode = true;
@@ -286,6 +318,8 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
       cancelAnimationFrame(this.animationFrameId);
     }
     this.resizeObserver?.disconnect();
+    window.removeEventListener('keydown', this.onPanKeyDown);
+    window.removeEventListener('keyup', this.onPanKeyUp);
   }
 
   private setupResponsiveCanvas(): void {
@@ -330,6 +364,12 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
       const dt = this.lastTime ? Math.min(0.05, (now - this.lastTime) / 1000) : 0.016;
       this.lastTime = now;
       this.phase += dt * 2.4;
+      if (this.panX !== 0 || this.panY !== 0) {
+        // Pan speed scales with the visible span so it feels the same at any zoom.
+        const sp = (this.VIEW_SPAN / this.zoom) * 0.6 * dt;
+        this.camX += this.panX * sp;
+        this.camY += this.panY * sp;
+      }
       this.updateWindParticles(dt);
       this.draw();
       this.animationFrameId = requestAnimationFrame(loop);
@@ -552,10 +592,8 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
   }
 
   private drawCannons(ctx: CanvasRenderingContext2D): void {
-    // Gun positions in the boat's local frame: bow, stern, two per broadside.
+    // Two guns per broadside (port and starboard); no bow/stern chasers.
     const guns = [
-      { x: 16, y: 0 },
-      { x: -15, y: 0 },
       { x: 4, y: -5 },
       { x: -6, y: -5 },
       { x: 4, y: 5 },

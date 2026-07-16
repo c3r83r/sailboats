@@ -89,14 +89,22 @@ public class LakeWorld {
     // AI bots: each lake is topped up so that roughly half the boats are bots
     // ("50% graczy stanowia boty"). They wander the lake and hunt human players.
     private static final int BOT_MAX = 5;
-    private static final double BOT_ENGAGE_RANGE = 7.0;
+    // How close a human must get before a bot notices and starts hunting it; a
+    // player beyond this range is simply not spotted yet, so bots patrol/wander
+    // instead of tracking someone clear across the lake.
+    private static final double BOT_SIGHT_RANGE = 11.0;
     private static final double BOT_FIRE_RANGE = 5.0;
     private static final double BOT_NOGO_DEG = 42.0;
     // How far ahead a bot looks for hazards, how close it keeps to landmasses and
-    // how wide a buffer it leaves around the lake edge before bearing away.
-    private static final double BOT_AVOID_LOOKAHEAD = 3.5;
-    private static final double BOT_ISLAND_CLEARANCE = 0.9;
-    private static final double BOT_EDGE_MARGIN = 2.5;
+    // how wide a buffer it leaves around the lake edge before bearing away. These
+    // are deliberately generous so bots peel off well before grazing a shore.
+    private static final double BOT_AVOID_LOOKAHEAD = 6.0;
+    private static final double BOT_ISLAND_CLEARANCE = 1.6;
+    private static final double BOT_EDGE_MARGIN = 5.0;
+    // How hard the repulsion field overrides the desired heading near an island
+    // or the lake edge - higher makes bots swerve away earlier and more sharply.
+    private static final double BOT_ISLAND_PUSH_SCALE = 2.6;
+    private static final double BOT_EDGE_PUSH_SCALE = 2.2;
     // Below this speed while pointing into the wind a bot is "in irons" and must
     // luff its sheets to let the bow blow off the wind before it can sail again.
     private static final double BOT_IRONS_SPEED = 0.3;
@@ -253,11 +261,6 @@ public class LakeWorld {
             return;
         }
         boat.setLastFireAt(now);
-        // A human opening fire becomes a valid target: bots leave players alone
-        // until they start shooting ("dopoki gracz nie zacznie").
-        if (!boat.isBot()) {
-            boat.setHasFired(true);
-        }
 
         double p = Math.max(0, Math.min(1, power));
         double speed = PROJECTILE_SPEED * (0.45 + 0.55 * p);
@@ -272,8 +275,6 @@ public class LakeWorld {
         double by = boat.getY();
 
         switch (side) {
-            case "bow" -> spawn(boat, bx + fx * 0.7, by + fy * 0.7, fx, fy, speed, ttl);
-            case "stern" -> spawn(boat, bx - fx * 0.7, by - fy * 0.7, -fx, -fy, speed, ttl);
             case "starboard" -> {
                 spawn(boat, bx + fx * 0.3 + sx * 0.5, by + fy * 0.3 + sy * 0.5, sx, sy, speed, ttl);
                 spawn(boat, bx - fx * 0.3 + sx * 0.5, by - fy * 0.3 + sy * 0.5, sx, sy, speed, ttl);
@@ -448,8 +449,8 @@ public class LakeWorld {
         boat.setSunk(false);
         boat.setHeel(0);
         boat.setCapsized(false);
-        // Fresh life starts peaceful: bots ignore the player again until they fire.
-        boat.setHasFired(false);
+        // Fresh life starts peaceful: bots ignore the player again until struck.
+        boat.setProvoked(false);
     }
 
     private void detectCollisions(long now) {
@@ -554,6 +555,14 @@ public class LakeWorld {
                 double dy = boat.getY() - p.y;
                 if (dx * dx + dy * dy < BOAT_HIT_RADIUS * BOAT_HIT_RADIUS) {
                     applyDamage(boat, PROJECTILE_DAMAGE, now, p.ownerId);
+                    // A bot actually struck by a human's cannonball becomes hostile
+                    // toward players; being shot AT and missed never provokes it.
+                    if (boat.isBot()) {
+                        BoatState attacker = boats.get(p.ownerId);
+                        if (attacker != null && !attacker.isBot()) {
+                            boat.setProvoked(true);
+                        }
+                    }
                     hit = true;
                     break;
                 }
@@ -730,19 +739,29 @@ public class LakeWorld {
             return;
         }
 
-        BoatState target = nearestEnemy(bot);
+        BoatState candidate = nearestEnemy(bot);
+        BoatState target = null;
+        double bearing = 0;
+        double d = 0;
+        if (candidate != null) {
+            double dx = candidate.getX() - bot.getX();
+            double dy = candidate.getY() - bot.getY();
+            d = Math.hypot(dx, dy);
+            if (d <= BOT_SIGHT_RANGE) {
+                // Only within sight range has the bot actually spotted the player;
+                // beyond it, the human might as well not be on the lake yet.
+                target = candidate;
+                bearing = Math.toDegrees(Math.atan2(dy, dx));
+            }
+        }
         double targetHeading;
         if (target != null) {
-            double dx = target.getX() - bot.getX();
-            double dy = target.getY() - bot.getY();
-            double d = Math.hypot(dx, dy);
-            double bearing = Math.toDegrees(Math.atan2(dy, dx));
             if (d <= BOT_FIRE_RANGE) {
                 // Close: hold the target on the beam to bring a broadside to bear.
                 targetHeading = bearing - 90.0;
                 botMaybeFire(bot, target, d, now);
             } else {
-                // Chase the player down.
+                // Spotted: chase the player down.
                 targetHeading = bearing;
             }
         } else {
@@ -833,14 +852,14 @@ public class LakeWorld {
 
         // Edge repulsion: bear back inside before reaching the boundary.
         if (x < BOT_EDGE_MARGIN) {
-            vx += (BOT_EDGE_MARGIN - x) / BOT_EDGE_MARGIN;
+            vx += (BOT_EDGE_MARGIN - x) / BOT_EDGE_MARGIN * BOT_EDGE_PUSH_SCALE;
         } else if (x > worldWidth - BOT_EDGE_MARGIN) {
-            vx -= (x - (worldWidth - BOT_EDGE_MARGIN)) / BOT_EDGE_MARGIN;
+            vx -= (x - (worldWidth - BOT_EDGE_MARGIN)) / BOT_EDGE_MARGIN * BOT_EDGE_PUSH_SCALE;
         }
         if (y < BOT_EDGE_MARGIN) {
-            vy += (BOT_EDGE_MARGIN - y) / BOT_EDGE_MARGIN;
+            vy += (BOT_EDGE_MARGIN - y) / BOT_EDGE_MARGIN * BOT_EDGE_PUSH_SCALE;
         } else if (y > worldHeight - BOT_EDGE_MARGIN) {
-            vy -= (y - (worldHeight - BOT_EDGE_MARGIN)) / BOT_EDGE_MARGIN;
+            vy -= (y - (worldHeight - BOT_EDGE_MARGIN)) / BOT_EDGE_MARGIN * BOT_EDGE_PUSH_SCALE;
         }
 
         // Island repulsion: bear away from landmasses that lie ahead within reach.
@@ -858,8 +877,8 @@ public class LakeWorld {
                 continue; // island is behind us and not an immediate hazard
             }
             double strength = (influence - d) / influence;
-            vx += (ox / d) * strength * 1.8;
-            vy += (oy / d) * strength * 1.8;
+            vx += (ox / d) * strength * BOT_ISLAND_PUSH_SCALE;
+            vy += (oy / d) * strength * BOT_ISLAND_PUSH_SCALE;
         }
 
         if (vx == 0 && vy == 0) {
@@ -872,21 +891,15 @@ public class LakeWorld {
         if (d > BOT_FIRE_RANGE || now - bot.getLastFireAt() < FIRE_COOLDOWN_MS) {
             return;
         }
-        // Hold fire until the player opens up - bots only retaliate, never start it.
-        if (!target.isHasFired()) {
+        // Hold fire until THIS bot has actually been hit by a player's cannonball -
+        // bots only retaliate once struck, they never open fire first.
+        if (!bot.isProvoked()) {
             return;
         }
         double bearing = Math.toDegrees(Math.atan2(target.getY() - bot.getY(), target.getX() - bot.getX()));
         double rel = signedDelta(bearing, bot.getHeading());
-        double a = Math.abs(rel);
-        String side;
-        if (a < 30.0) {
-            side = "bow";
-        } else if (a > 150.0) {
-            side = "stern";
-        } else {
-            side = rel > 0 ? "starboard" : "port";
-        }
+        // Only broadside guns remain, so fire whichever side the target is on.
+        String side = rel > 0 ? "starboard" : "port";
         fire(bot.getBoatId(), side, 0.6 + ThreadLocalRandom.current().nextDouble() * 0.4);
     }
 

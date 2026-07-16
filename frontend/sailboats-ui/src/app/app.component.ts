@@ -156,7 +156,8 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
         <span><b>A</b>/<b>D</b> ster</span>
         <span><b>G</b> staw grot &middot; <b>Shift+G</b> refuj &middot; <b>W</b>/<b>S</b> talia</span>
         <span><b>F</b> staw fok &middot; <b>Shift+F</b> refuj &middot; <b>E</b>/<b>Q</b> szot</span>
-        <span><b>&larr;</b>/<b>&rarr;</b> działa burty &middot; <b>&uarr;</b>/<b>&darr;</b> dziób/rufa &middot; trzymaj = dalej</span>
+        <span><b>1</b> lewa burta &middot; <b>2</b> prawa burta &middot; trzymaj = dalej</span>
+        <span><b>&larr;</b><b>&uarr;</b><b>&darr;</b><b>&rarr;</b> kamera / widok &middot; <b>kółko</b> zoom</span>
         <span><b>T</b> auto-trym &middot; <b>K</b> kotwica &middot; <b>M</b> motyl (fordewind)</span>
       </div>
 
@@ -1251,8 +1252,10 @@ export class AppComponent implements OnInit, OnDestroy {
       return;
     }
 
-    // Arrow keys aim the guns: charge the chosen side while held, fire on release.
-    const side = this.arrowToSide(key);
+    // Guns: 1 = port (left) broadside, 2 = starboard (right) broadside. Charge
+    // the chosen side while held, fire on release. (Arrows now steer the camera
+    // in 3D / pan the view in 2D, handled inside those components.)
+    const side = this.fireKeyToSide(key);
     if (side) {
       if (this.chargingSide === null && performance.now() >= this.fireReadyAt) {
         this.chargingSide = side;
@@ -1309,7 +1312,7 @@ export class AppComponent implements OnInit, OnDestroy {
     }
 
     const key = event.key.toLowerCase();
-    const side = this.arrowToSide(key);
+    const side = this.fireKeyToSide(key);
     if (side && this.chargingSide === side) {
       this.fireSalvo();
       return;
@@ -1334,12 +1337,10 @@ export class AppComponent implements OnInit, OnDestroy {
     this.chargeLevel = 0;
   }
 
-  private arrowToSide(key: string): FireSide | null {
+  private fireKeyToSide(key: string): FireSide | null {
     switch (key) {
-      case 'arrowleft': return 'port';
-      case 'arrowright': return 'starboard';
-      case 'arrowup': return 'bow';
-      case 'arrowdown': return 'stern';
+      case '1': return 'port';
+      case '2': return 'starboard';
       default: return null;
     }
   }
