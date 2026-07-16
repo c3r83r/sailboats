@@ -105,11 +105,11 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
   private wakePrevStern: { x: number; z: number } | null = null;
   private wakeSpeed = 0; // smoothed hull speed (scene units/sec) driving foam
   private readonly WAKE_MAX = 120; // max live crest points
-  private readonly WAKE_SPACING = 0.45; // emit a new crest every this many units
+  private readonly WAKE_SPACING = 0.16; // emit a new crest every this many units
   private readonly WAKE_LIFE = 5.0; // seconds before a crest fully fades away
-  private readonly WAKE_SPREAD = 0.32; // how fast (units/sec) crests fan outward
-  private readonly WAKE_BASE_HALF = 0.3; // crest offset at the stern (the V apex)
-  private readonly WAKE_THICK = 0.42; // radial half-thickness of each crest band
+  private readonly WAKE_SPREAD = 0.12; // how fast (units/sec) crests fan outward
+  private readonly WAKE_BASE_HALF = 0.11; // crest offset at the stern (the V apex)
+  private readonly WAKE_THICK = 0.15; // radial half-thickness of each crest band
   // Bow wave (the foam "moustache" spreading from the bow) — a flat quad aimed
   // forward and scaled/faded with speed.
   private bowWave?: THREE.Mesh;
@@ -119,6 +119,12 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
   // A single-frame jump larger than this (scene units) is a teleport (respawn or
   // lake change), not sailing — we snap the visuals instead of gliding across.
   private readonly TELEPORT_SNAP_DIST = 5;
+
+  // Visual scale of the 3D boat model. Tuned so the hull's world-space length
+  // (~1.23 units) matches the 2D view, i.e. about a third of a typical island —
+  // otherwise the boat looked almost as big as an island. The chase camera, wake
+  // and bow-wave sizes are all tuned around this scale.
+  private readonly BOAT_SCALE = 0.47;
 
   // Per-id mesh pools so we add/remove/update meshes as the sim changes.
   private boatMeshes = new Map<string, THREE.Group>();
@@ -1725,7 +1731,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       let g = this.boatMeshes.get(boat.boatId);
       if (!g) {
         g = this.makeBoat();
-        g.scale.setScalar(1.3);
+        g.scale.setScalar(this.BOAT_SCALE);
         // Cache the cannon elevation pivots so we can animate them each frame.
         const pivots: THREE.Object3D[] = [];
         g.traverse((o) => {
@@ -1827,7 +1833,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       const label = this.ensureNameLabel(boat.boatId, boat.name, !!boat.anchored && !boat.sunk);
       if (label) {
         label.visible = !boat.sunk;
-        label.position.set(disp.x, wy + 5.7, disp.y);
+        label.position.set(disp.x, wy + 2.2, disp.y);
       }
     }
 
@@ -1876,7 +1882,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       sprite.material.needsUpdate = true;
     }
     sprite.userData['name'] = key;
-    const height = 0.82; // world units tall
+    const height = 0.34; // world units tall
     sprite.scale.set(height * aspect, height, 1);
     return sprite;
   }
@@ -2272,8 +2278,8 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     // Stern point: a little behind the hull centre along its heading.
     const fx = Math.cos(headRad);
     const fz = Math.sin(headRad);
-    const sternX = boatPos.x - fx * 1.1;
-    const sternZ = boatPos.z - fz * 1.1;
+    const sternX = boatPos.x - fx * 0.4;
+    const sternZ = boatPos.z - fz * 0.4;
     // Perpendicular to the heading (on the water plane) — the crests spread along it.
     const perpX = -fz;
     const perpZ = fx;
@@ -2371,10 +2377,10 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     // the heading, growing with speed and sweeping foam back along the hull.
     if (this.bowWave) {
       const grow = Math.min(1.4, 0.5 + this.wakeSpeed * 0.25);
-      const scaleZ = 3.0 * grow;
-      // Place the quad centre so its forward (+Z) edge reaches ~the bow (1.2 ahead
+      const scaleZ = 1.1 * grow;
+      // Place the quad centre so its forward (+Z) edge reaches ~the bow (0.45 ahead
       // of the hull centre); arms then trail back alongside the hull.
-      const centreFwd = 1.2 - scaleZ / 2;
+      const centreFwd = 0.45 - scaleZ / 2;
       const bx = boatPos.x + fx * centreFwd;
       const bz = boatPos.z + fz * centreFwd;
       const by = this.waveHeight(bx, bz, t) + 0.09;
@@ -2383,7 +2389,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
         new THREE.Vector3(0, 0, 1),
         new THREE.Vector3(fx, 0, fz),
       );
-      this.bowWave.scale.set(2.2 * grow, 1, scaleZ);
+      this.bowWave.scale.set(0.8 * grow, 1, scaleZ);
       const bowMat = this.bowWave.material as THREE.MeshBasicMaterial;
       const bowTarget = Math.max(0, Math.min(0.85, (this.wakeSpeed - 0.3) / 2.4));
       bowMat.opacity += (bowTarget - bowMat.opacity) * (1 - Math.exp(-5 * dt));
@@ -2507,8 +2513,8 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     const playerDisp = this.playerBoatId ? this.boatDisplay.get(this.playerBoatId) : undefined;
     const h = playerDisp ? playerDisp.headRad : ((player ? player.heading : 90) * Math.PI) / 180;
     const boatPos = boatMesh ? boatMesh.position : new THREE.Vector3(p.x, this.waveHeight(p.x, p.y, t), p.y);
-    const camDist = 11;
-    const camHeight = 5.6;
+    const camDist = 5.0;
+    const camHeight = 3.0;
 
     // Advance the manual orbit (9 / 0 keys) using real elapsed time.
     this.orbit += this.orbitDir * this.ORBIT_SPEED * dt;
@@ -2541,7 +2547,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       boatPos.y + camHeight,
       boatPos.z + off.z * camDist,
     );
-    const lookTarget = new THREE.Vector3(boatPos.x, boatPos.y + 1.9, boatPos.z);
+    const lookTarget = new THREE.Vector3(boatPos.x, boatPos.y + 0.9, boatPos.z);
 
     if (!this.camReady) {
       this.camera.position.copy(desired);
