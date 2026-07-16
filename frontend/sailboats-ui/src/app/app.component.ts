@@ -533,6 +533,23 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
       filter: brightness(1.15);
     }
 
+    .about-link {
+      padding: 6px 12px;
+      border-radius: 8px;
+      border: 1px solid rgba(143, 227, 255, 0.25);
+      background: rgba(8, 18, 30, 0.4);
+      color: rgba(216, 244, 255, 0.85);
+      font-size: 0.8rem;
+      font-weight: 700;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+
+    .about-link:hover {
+      color: #eaf6ff;
+      background: rgba(143, 227, 255, 0.16);
+    }
+
     .lake-browser {
       position: fixed;
       inset: 0;
