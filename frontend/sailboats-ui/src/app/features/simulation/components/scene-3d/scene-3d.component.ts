@@ -1072,7 +1072,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
 
   private cannonballGeo(): THREE.SphereGeometry {
     if (!this.cballGeo) {
-      this.cballGeo = new THREE.SphereGeometry(0.13, 12, 10);
+      this.cballGeo = new THREE.SphereGeometry(0.06, 10, 8);
       this.sharedGeo.push(this.cballGeo);
     }
     return this.cballGeo;
@@ -1103,21 +1103,21 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       return;
     }
     const grp = new THREE.Group();
-    grp.position.set(x, this.waveHeight(x, y, t) + 0.42, y);
+    grp.position.set(x, this.waveHeight(x, y, t) + 0.16, y);
     const flash = new THREE.Mesh(
       this.fxSphere(),
       new THREE.MeshBasicMaterial({ color: new THREE.Color('#ffdf9e'), transparent: true, opacity: 1, blending: THREE.AdditiveBlending, depthWrite: false }),
     );
-    flash.scale.setScalar(0.42);
+    flash.scale.setScalar(0.14);
     grp.add(flash);
     const smoke = new THREE.Mesh(
       this.fxSphere(),
-      new THREE.MeshStandardMaterial({ color: new THREE.Color('#e6e6e6'), transparent: true, opacity: 0.7, depthWrite: false, roughness: 1 }),
+      new THREE.MeshStandardMaterial({ color: new THREE.Color('#e6e6e6'), transparent: true, opacity: 0.55, depthWrite: false, roughness: 1 }),
     );
-    smoke.scale.setScalar(0.34);
+    smoke.scale.setScalar(0.12);
     grp.add(smoke);
     this.scene.add(grp);
-    this.muzzleFx.push({ grp, flash, smoke, born: t, life: 1.1 });
+    this.muzzleFx.push({ grp, flash, smoke, born: t, life: 0.75 });
   }
 
   private updateMuzzleFx(t: number): void {
@@ -1136,12 +1136,12 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       const fa = Math.max(0, 1 - age / 0.3);
       fm.opacity = fa;
       fx.flash.visible = fa > 0;
-      fx.flash.scale.setScalar(0.42 + age * 0.7);
+      fx.flash.scale.setScalar(0.14 + age * 0.22);
       // Smoke: expand, drift up and fade over the whole life.
       const sm = fx.smoke.material as THREE.MeshStandardMaterial;
-      sm.opacity = 0.7 * (1 - age);
-      fx.smoke.scale.setScalar(0.34 + age * 1.5);
-      fx.smoke.position.y = age * 0.7;
+      sm.opacity = 0.5 * (1 - age);
+      fx.smoke.scale.setScalar(0.12 + age * 0.5);
+      fx.smoke.position.y = age * 0.28;
     }
   }
 
@@ -1170,7 +1170,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       }
       // A short lob over the projectile's ~1.1s life so it reads as a fired shot.
       const arc = Math.sin(Math.PI * Math.min(1, (t - born) / 1.1));
-      m.position.set(p.x, this.waveHeight(p.x, p.y, t) + 0.4 + 1.1 * arc, p.y);
+      m.position.set(p.x, this.waveHeight(p.x, p.y, t) + 0.16 + 0.4 * arc, p.y);
     }
     for (const [id, m] of this.projectileMeshes) {
       if (!seen.has(id)) {
