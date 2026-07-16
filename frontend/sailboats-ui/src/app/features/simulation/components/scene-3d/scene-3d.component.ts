@@ -104,10 +104,10 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
   private wakePts: { x: number; z: number; px: number; pz: number; born: number }[] = [];
   private wakePrevStern: { x: number; z: number } | null = null;
   private wakeSpeed = 0; // smoothed hull speed (scene units/sec) driving foam
-  private readonly WAKE_MAX = 90; // max live crest points
+  private readonly WAKE_MAX = 120; // max live crest points
   private readonly WAKE_SPACING = 0.45; // emit a new crest every this many units
-  private readonly WAKE_LIFE = 2.8; // seconds before a crest fully fades away
-  private readonly WAKE_SPREAD = 1.15; // how fast (units/sec) crests fan outward
+  private readonly WAKE_LIFE = 5.0; // seconds before a crest fully fades away
+  private readonly WAKE_SPREAD = 0.55; // how fast (units/sec) crests fan outward
   private readonly WAKE_BASE_HALF = 0.3; // crest offset at the stern (the V apex)
   private readonly WAKE_THICK = 0.42; // radial half-thickness of each crest band
   // Bow wave (the foam "moustache" spreading from the bow) — a flat quad aimed
