@@ -302,14 +302,14 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
   // and a cockpit — so it reads as a real yacht rather than a plank.
   private makeHull(): THREE.Group {
     const grp = new THREE.Group();
-    const nSt = 18; // stations along the length
+    const nSt = 20; // stations along the length
     const nSec = 13; // points across each U-shaped section
-    const xStern = -0.98;
-    const xBow = 1.2;
+    const xStern = -1.2;
+    const xBow = 1.42;
 
-    // Antila-33-style cruiser: beam carried well aft (wide stern), moderate
-    // freeboard and a nearly plumb bow.
-    const beamCtrl: [number, number][] = [[0, 0.4], [0.12, 0.44], [0.35, 0.48], [0.55, 0.485], [0.72, 0.46], [0.86, 0.34], [0.95, 0.16], [1, 0.03]];
+    // A long, slim hull (not based on any one boat): fine entry at the bow,
+    // moderate beam carried a touch aft, clean transom.
+    const beamCtrl: [number, number][] = [[0, 0.27], [0.14, 0.32], [0.38, 0.37], [0.56, 0.38], [0.74, 0.35], [0.88, 0.24], [0.96, 0.1], [1, 0.02]];
     const beam = (t: number) => this.profile(beamCtrl, t);
     const deckY = (t: number) => 0.46 + 0.16 * Math.pow(t, 1.8) + 0.05 * Math.pow(1 - t, 2.2);
     // Shallow, rounded canoe body — the real draught comes from the fin keel below.
@@ -365,23 +365,23 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     // underbody, so the hull no longer shows a crude deep V.
     const keelMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#2b313a'), roughness: 0.5, metalness: 0.25 });
     this.sharedMat.push(keelMat);
-    const finGeo = new THREE.BoxGeometry(0.4, 0.62, 0.055);
-    finGeo.translate(0, -0.31, 0);
+    const finGeo = new THREE.BoxGeometry(0.42, 0.64, 0.05);
+    finGeo.translate(0, -0.32, 0);
     this.sharedGeo.push(finGeo);
     const fin = new THREE.Mesh(finGeo, keelMat);
-    fin.position.set(0.22, -0.1, 0);
+    fin.position.set(0.12, -0.1, 0);
     grp.add(fin);
-    const bulbGeo = new THREE.SphereGeometry(0.08, 10, 8);
-    bulbGeo.scale(2.4, 0.85, 1.1);
+    const bulbGeo = new THREE.SphereGeometry(0.075, 10, 8);
+    bulbGeo.scale(2.6, 0.8, 1.05);
     this.sharedGeo.push(bulbGeo);
     const bulb = new THREE.Mesh(bulbGeo, keelMat);
-    bulb.position.set(0.22, -0.72, 0);
+    bulb.position.set(0.12, -0.74, 0);
     grp.add(bulb);
-    const rudGeo = new THREE.BoxGeometry(0.13, 0.44, 0.04);
-    rudGeo.translate(0, -0.22, 0);
+    const rudGeo = new THREE.BoxGeometry(0.12, 0.46, 0.035);
+    rudGeo.translate(0, -0.23, 0);
     this.sharedGeo.push(rudGeo);
     const rudder = new THREE.Mesh(rudGeo, keelMat);
-    rudder.position.set(-0.82, -0.06, 0);
+    rudder.position.set(-1.02, -0.05, 0);
     grp.add(rudder);
 
     // Deck: pale non-skid deck spanning the port and starboard deck edges.
@@ -416,9 +416,9 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
 
     // Coachroof (nadbudówka): a long, low cabin with rounded corners, extruded
     // from a plan-view rounded rectangle so it looks moulded, not a plain box.
-    const cabW = 0.28; // half width
-    const cabFront = 0.92;
-    const cabAft = -0.28;
+    const cabW = 0.22; // half width
+    const cabFront = 1.0;
+    const cabAft = -0.34;
     const cshape = new THREE.Shape();
     const rr = 0.16;
     cshape.moveTo(cabAft, -cabW);
@@ -428,40 +428,95 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     cshape.quadraticCurveTo(cabFront, cabW, cabFront - rr, cabW);
     cshape.lineTo(cabAft, cabW);
     cshape.closePath();
-    const cabGeo = new THREE.ExtrudeGeometry(cshape, { depth: 0.2, bevelEnabled: true, bevelThickness: 0.05, bevelSize: 0.04, bevelSegments: 2 });
+    const cabGeo = new THREE.ExtrudeGeometry(cshape, { depth: 0.18, bevelEnabled: true, bevelThickness: 0.05, bevelSize: 0.04, bevelSegments: 2 });
     cabGeo.rotateX(-Math.PI / 2);
     this.sharedGeo.push(cabGeo);
     const cabinMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#f4f3ee'), roughness: 0.5 });
     this.sharedMat.push(cabinMat);
     const cabin = new THREE.Mesh(cabGeo, cabinMat);
-    const cabinBaseY = deckY(0.6) + 0.02;
-    cabin.position.set(0.1, cabinBaseY, 0);
+    const cabinBaseY = deckY(0.62) + 0.02;
+    cabin.position.set(0.12, cabinBaseY, 0);
     grp.add(cabin);
 
     // Window band: a dark strip wrapping the cabin sides (tinted glazing).
-    const winGeo = new THREE.BoxGeometry(1.02, 0.1, cabW * 2 + 0.06);
+    const winGeo = new THREE.BoxGeometry(1.12, 0.09, cabW * 2 + 0.05);
     this.sharedGeo.push(winGeo);
     const winMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#10141a'), roughness: 0.25, metalness: 0.3 });
     this.sharedMat.push(winMat);
     const windows = new THREE.Mesh(winGeo, winMat);
-    windows.position.set(0.28, cabinBaseY + 0.16, 0);
+    windows.position.set(0.34, cabinBaseY + 0.14, 0);
     grp.add(windows);
 
     // Companionway hatch (dark opening at the aft end of the cabin).
-    const hatchGeo = new THREE.BoxGeometry(0.22, 0.16, 0.34);
+    const hatchGeo = new THREE.BoxGeometry(0.22, 0.15, 0.3);
     this.sharedGeo.push(hatchGeo);
     const hatch = new THREE.Mesh(hatchGeo, winMat);
-    hatch.position.set(-0.22, cabinBaseY + 0.14, 0);
+    hatch.position.set(-0.28, cabinBaseY + 0.13, 0);
     grp.add(hatch);
 
+    // Cabin-top grab rails: thin dark tubes each side of the coachroof.
+    const grabMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#8a6a3c'), roughness: 0.6 });
+    this.sharedMat.push(grabMat);
+    for (const sign of [1, -1]) {
+      const gr = new THREE.CatmullRomCurve3([
+        new THREE.Vector3(0.75, cabinBaseY + 0.2, sign * (cabW - 0.05)),
+        new THREE.Vector3(0.3, cabinBaseY + 0.22, sign * (cabW - 0.03)),
+        new THREE.Vector3(-0.15, cabinBaseY + 0.22, sign * (cabW - 0.03)),
+      ]);
+      const grGeo = new THREE.TubeGeometry(gr, 12, 0.014, 5, false);
+      this.sharedGeo.push(grGeo);
+      grp.add(new THREE.Mesh(grGeo, grabMat));
+    }
+
     // Cockpit sole: a recessed dark panel aft of the cabin.
-    const cockGeo = new THREE.BoxGeometry(0.62, 0.06, 0.56);
+    const cockGeo = new THREE.BoxGeometry(0.72, 0.06, 0.52);
     this.sharedGeo.push(cockGeo);
     const cockMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#5a4a34'), roughness: 0.9 });
     this.sharedMat.push(cockMat);
     const cockpit = new THREE.Mesh(cockGeo, cockMat);
-    cockpit.position.set(-0.55, deckY(0.22) - 0.03, 0);
+    const cockY = deckY(0.2) - 0.02;
+    cockpit.position.set(-0.72, cockY, 0);
     grp.add(cockpit);
+
+    // Deck details: steering pedestal + wheel, primary winches and a bow cleat.
+    const metalMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#c6ccd2'), roughness: 0.3, metalness: 0.8 });
+    this.sharedMat.push(metalMat);
+    const deckTopY = deckY(0.2);
+
+    // Pedestal.
+    const pedGeo = new THREE.CylinderGeometry(0.05, 0.06, 0.26, 8);
+    pedGeo.translate(0, 0.13, 0);
+    this.sharedGeo.push(pedGeo);
+    const pedestal = new THREE.Mesh(pedGeo, metalMat);
+    pedestal.position.set(-0.62, deckTopY, 0);
+    grp.add(pedestal);
+
+    // Wheel: a ring (athwartships) with a hub and spokes on the pedestal.
+    const wheelR = 0.17;
+    const wheelGeo = new THREE.TorusGeometry(wheelR, 0.014, 6, 20);
+    wheelGeo.rotateY(Math.PI / 2); // face aft (plane across the boat)
+    this.sharedGeo.push(wheelGeo);
+    const wheel = new THREE.Mesh(wheelGeo, metalMat);
+    wheel.position.set(-0.62, deckTopY + 0.32, 0);
+    grp.add(wheel);
+    const spokeGeo = new THREE.CylinderGeometry(0.006, 0.006, wheelR * 2, 4);
+    this.sharedGeo.push(spokeGeo);
+    for (let k = 0; k < 3; k++) {
+      const spoke = new THREE.Mesh(spokeGeo, metalMat);
+      spoke.position.copy(wheel.position);
+      spoke.rotation.x = (k * Math.PI) / 3;
+      grp.add(spoke);
+    }
+
+    // Primary winches either side of the cockpit.
+    const winchGeo = new THREE.CylinderGeometry(0.05, 0.045, 0.07, 10);
+    winchGeo.translate(0, 0.035, 0);
+    this.sharedGeo.push(winchGeo);
+    for (const sign of [1, -1]) {
+      const winch = new THREE.Mesh(winchGeo, metalMat);
+      winch.position.set(-0.42, deckTopY, sign * (beam(0.24) - 0.08));
+      grp.add(winch);
+    }
 
     // Guard rails: stanchions, lifelines and bow/stern pulpits in stainless.
     grp.add(this.makeRails(beam, deckY, xBow, xStern));
@@ -580,8 +635,8 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     // spreaders. Fixed wires that hold the mast up; they heel with the boat.
     const mastHead = new THREE.Vector3(0.25, 2.6, 0);
     const hounds = new THREE.Vector3(0.25, 1.9, 0);
-    const bowTack = new THREE.Vector3(1.15, 0.2, 0);
-    const stern = new THREE.Vector3(-0.95, 0.36, 0);
+    const bowTack = new THREE.Vector3(1.34, 0.34, 0);
+    const stern = new THREE.Vector3(-1.14, 0.42, 0);
     const chainPort = new THREE.Vector3(0.12, 0.34, 0.44);
     const chainStbd = new THREE.Vector3(0.12, 0.34, -0.44);
     const spreadPort = new THREE.Vector3(0.25, 1.88, 0.28);
@@ -707,13 +762,13 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#3b4048'), roughness: 0.5, metalness: 0.6 });
     this.sharedMat.push(mat);
     // Hung at the bow roller just above the waterline so it reads clearly.
-    const anchorPos = new THREE.Vector3(1.5, 0.05, 0);
+    const anchorPos = new THREE.Vector3(1.55, 0.08, 0);
 
     // Rode (chain) from the bow fitting down to the anchor stock.
     const rodeMat = new THREE.LineBasicMaterial({ color: 0x20242a });
     this.sharedMat.push(rodeMat);
     const rodeGeo = new THREE.BufferGeometry().setFromPoints([
-      new THREE.Vector3(1.15, 0.35, 0),
+      new THREE.Vector3(1.34, 0.36, 0),
       new THREE.Vector3(anchorPos.x, anchorPos.y + 0.3, 0),
     ]);
     this.sharedGeo.push(rodeGeo);
@@ -880,13 +935,13 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       const show = !capsized && rolled > 0.02;
       jib.visible = show;
       if (show) {
-        const tack = new THREE.Vector3(1.15, 0.2, 0);
-        const head = new THREE.Vector3(0.28, 2.4, 0); // luff runs the full forestay
-        const jibFoot = 1.0;
-        const jibAngle = 0.2 + (1 - jibSheet) * 0.95;
+        const tack = new THREE.Vector3(1.34, 0.34, 0);
+        const head = new THREE.Vector3(0.3, 2.35, 0); // luff runs the full forestay
+        const jibFoot = 0.72;
+        const jibAngle = 0.22 + (1 - jibSheet) * 0.85;
         const fullClew = new THREE.Vector3(
-          1.15 - Math.cos(jibAngle) * jibFoot,
-          0.5,
+          1.34 - Math.cos(jibAngle) * jibFoot,
+          0.62,
           lee * Math.sin(jibAngle) * jibFoot,
         );
         // Roller furl: clew rolls in toward the tack/stay as the sail furls.
@@ -974,8 +1029,8 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     const h = ((player ? player.heading : 90) * Math.PI) / 180;
     const boatPos = boatMesh ? boatMesh.position : new THREE.Vector3(p.x, this.waveHeight(p.x, p.y, t), p.y);
     const camTarget = new THREE.Vector3(boatPos.x, boatPos.y + 1.3, boatPos.z);
-    const camDist = 8.5;
-    const camHeight = 4.4;
+    const camDist = 9.5;
+    const camHeight = 4.9;
 
     // Advance the manual orbit (9 / 0 keys) using real elapsed time.
     const dt = this.lastTime ? Math.min(0.05, t - this.lastTime) : 0.016;
