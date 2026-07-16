@@ -718,6 +718,15 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     const mainOuthaul = new THREE.Line(mainOuthaulGeo, sheetMat);
     mainOuthaul.name = 'mainOuthaul';
     rig.add(mainOuthaul);
+    // Lazy jacks: a cradle of light lines from up the mast down to points along
+    // the boom, into which the main "flakes" as it is reefed/dropped. Four legs
+    // (two each side); endpoints re-set every frame as the boom swings.
+    const lazyGeo = new THREE.BufferGeometry();
+    lazyGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(8 * 3), 3));
+    this.sharedGeo.push(lazyGeo);
+    const lazyJacks = new THREE.LineSegments(lazyGeo, sheetMat);
+    lazyJacks.name = 'lazyJacks';
+    rig.add(lazyJacks);
     const jibSheetGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
     this.sharedGeo.push(jibSheetGeo);
     const jibSheet = new THREE.Line(jibSheetGeo, sheetMat);
@@ -1003,6 +1012,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     const jib = rig.getObjectByName('jib') as THREE.Mesh | undefined;
     const mainSheetLine = rig.getObjectByName('mainSheet') as THREE.Line | undefined;
     const mainOuthaulLine = rig.getObjectByName('mainOuthaul') as THREE.Line | undefined;
+    const lazyJacksLine = rig.getObjectByName('lazyJacks') as THREE.LineSegments | undefined;
     const jibSheetLine = rig.getObjectByName('jibSheet') as THREE.Line | undefined;
 
     // ---- Mainsail (grot) ----
@@ -1010,47 +1020,63 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       const show = !capsized && mainDeploy > 0.05;
       main.visible = show;
       const boomY = 0.62;
-      // The boom is a fixed-length alloy spar hinged at the gooseneck — it never
-      // shrinks. Reefing only pulls the sail's CLEW inboard along the boom on
-      // the outhaul, so the cloth gets smaller while the spar stays full length.
-      const reef = 0.5 + 0.5 * mainDeploy;
+      // The boom is a fixed-length alloy spar hinged at the gooseneck.
       const boomLen = 1.25;
       const boomAngle = show ? 0.12 + (1 - mainSheet) * 0.95 : 0.1;
       const tack = new THREE.Vector3(0.25, boomY, 0);
       const boomDir = new THREE.Vector3(-Math.cos(boomAngle), 0, lee * Math.sin(boomAngle));
       const boomEnd = tack.clone().add(boomDir.clone().multiplyScalar(boomLen));
-      // Clew rides a fraction of the way out the boom; the outhaul spans the rest.
-      const clew = tack.clone().add(boomDir.clone().multiplyScalar(boomLen * reef));
+      // Slab / flaking main: the clew is held out at the boom end by the outhaul,
+      // so the FOOT always spans the full boom. Reefing or dropping the main
+      // lowers the HEAD down the mast and the lower cloth "flakes" onto the boom
+      // in the lazy jacks \u2014 the sail does not scale down into a small triangle.
+      const clew = boomEnd.clone();
       if (boom) {
         boom.visible = !capsized;
         this.alignSpar(boom, tack, boomEnd);
       }
+      // Lazy-jack cradle: four legs from up the mast down to the boom, following
+      // the boom as it swings, so a reefed main visibly sits in the lazy jacks.
+      if (lazyJacksLine) {
+        lazyJacksLine.visible = !capsized;
+        const attr = (lazyJacksLine.geometry as THREE.BufferGeometry).attributes['position'] as THREE.BufferAttribute;
+        const perp = new THREE.Vector3(boomDir.z, 0, -boomDir.x);
+        const mastPt = new THREE.Vector3(0.25, boomY + 1.65, 0);
+        let i = 0;
+        for (const s of [1, -1]) {
+          for (const f of [0.42, 0.8]) {
+            const bp = tack.clone()
+              .add(boomDir.clone().multiplyScalar(boomLen * f))
+              .add(perp.clone().multiplyScalar(s * 0.14));
+            const top = mastPt.clone().add(perp.clone().multiplyScalar(s * 0.04));
+            attr.setXYZ(i++, top.x, top.y, top.z);
+            attr.setXYZ(i++, bp.x, bp.y, bp.z);
+          }
+        }
+        attr.needsUpdate = true;
+      }
       if (show) {
-        // Tall, high-aspect main running well up the taller mast, with a
-        // convex (roached) leech like a real mainsail.
-        const headY = boomY + 2.9 * reef;
+        // Slab reef: only the hoisted fraction of the luff is up the mast; the
+        // rest is flaked on the boom. Foot stays full, height reduces with reef.
+        const hoist = 0.12 + 0.88 * mainDeploy;
+        const headY = boomY + 2.9 * hoist;
         const head = new THREE.Vector3(0.25, headY, 0);
         const power = mainDeploy * (0.35 + 0.65 * mainSheet);
         const belly = mainLuff ? 0.05 : 0.36 * power * camberScale;
         const flutter = mainLuff ? 0.14 * gust : 0.02;
         this.updateSail(main, tack, head, clew, lee, belly, flutter, t, 0.12, 0.22);
-        // Outhaul: clew out to the fixed boom end (visible gap only when reefed).
-        if (mainOuthaulLine) {
-          mainOuthaulLine.visible = true;
-          this.setLine(mainOuthaulLine, clew, boomEnd);
-        }
         // Mainsheet: from the fixed boom end down to the traveller near the stern.
         if (mainSheetLine) {
           mainSheetLine.visible = true;
           this.setLine(mainSheetLine, boomEnd, new THREE.Vector3(-1.05, 0.42, 0));
         }
-      } else {
-        if (mainSheetLine) {
-          mainSheetLine.visible = false;
-        }
-        if (mainOuthaulLine) {
-          mainOuthaulLine.visible = false;
-        }
+      } else if (mainSheetLine) {
+        mainSheetLine.visible = false;
+      }
+      // The outhaul now always holds the clew at the boom end, so there is no
+      // visible slack line to draw.
+      if (mainOuthaulLine) {
+        mainOuthaulLine.visible = false;
       }
     }
 
