@@ -127,6 +127,20 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
   private buoyMeshes = new Map<string, THREE.Group>();
   private lastIslandsRef: Island[] | null = null;
 
+  // Gunnery visuals: when a projectile with a new id first appears we treat it as
+  // a fresh shot — flash+smoke at the muzzle, and the shooter's barrels lift while
+  // they reload. projSeen tracks first-seen time per projectile so we can arc it.
+  private projSeen = new Map<string, number>();
+  private lastFireAt = new Map<string, number>();
+  private muzzleFx: { grp: THREE.Group; flash: THREE.Mesh; smoke: THREE.Mesh; born: number; life: number }[] = [];
+  private cballGeo?: THREE.SphereGeometry;
+  private cballMat?: THREE.MeshStandardMaterial;
+  private fxSphereGeo?: THREE.IcosahedronGeometry;
+  // Reload time (matches server FIRE_COOLDOWN_MS) and how far the muzzles rise
+  // while loading — level when ready, tilted up mid-reload for a longer lob.
+  private readonly CANNON_RELOAD_S = 2.0;
+  private readonly CANNON_MAX_ELEV = 0.22;
+
   // Smoothed (interpolated) ground-plane position/heading per boat, keyed by
   // boatId. Network snapshots only arrive ~20x/sec, so without this the hull
   // (and anything locked to it, like the chase camera) would hold still for a
@@ -935,85 +949,167 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     return grp;
   }
 
-  // Six cannons matching the fire() sides used server-side: a single bow and
-  // stern chaser plus two broadside guns per side, mounted on chunky wooden
-  // carriages with heavy iron barrels that jut well past the rail so they read
-  // clearly from a distance.
+  // Six small cannons matching the fire() sides used server-side (bow, stern,
+  // port, starboard). Each gun is aimed along local +X and yawed to its side;
+  // the barrel hangs on an elevation pivot so it can lift while reloading.
   private makeCannons(beam: (t: number) => number, deckY: (t: number) => number, xBow: number, xStern: number): THREE.Group {
     const grp = new THREE.Group();
 
-    const barrelMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#14161a'), roughness: 0.35, metalness: 0.85 });
-    const carriageMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#6b4423'), roughness: 0.85 });
-    this.sharedMat.push(barrelMat, carriageMat);
+    const barrelMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#15171b'), roughness: 0.4, metalness: 0.8 });
+    const baseMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#3a2c1a'), roughness: 0.85 });
+    this.sharedMat.push(barrelMat, baseMat);
 
-    const barrelLen = 0.62;
-    // Pivot at the breech end (origin) so the muzzle end pokes outward once rotated.
-    const barrelGeo = new THREE.CylinderGeometry(0.05, 0.07, barrelLen, 12);
-    barrelGeo.translate(0, barrelLen / 2, 0);
+    const barrelLen = 0.24;
+    // Barrel modelled along +X with the breech at the pivot origin, so raising
+    // the pivot lifts the muzzle.
+    const barrelGeo = new THREE.CylinderGeometry(0.024, 0.032, barrelLen, 10);
+    barrelGeo.rotateZ(-Math.PI / 2);
+    barrelGeo.translate(barrelLen / 2, 0, 0);
     this.sharedGeo.push(barrelGeo);
-    // A cascabel knob at the breech and a muzzle ring so the barrel reads as a gun.
-    const breechGeo = new THREE.SphereGeometry(0.075, 10, 8);
-    this.sharedGeo.push(breechGeo);
-    const carriageGeo = new THREE.BoxGeometry(0.26, 0.15, 0.22);
-    this.sharedGeo.push(carriageGeo);
-    // Little wheels (trucks) on the carriage sides.
-    const wheelGeo = new THREE.CylinderGeometry(0.05, 0.05, 0.04, 8);
-    wheelGeo.rotateX(Math.PI / 2);
-    this.sharedGeo.push(wheelGeo);
+    const baseGeo = new THREE.BoxGeometry(0.1, 0.045, 0.075);
+    this.sharedGeo.push(baseGeo);
 
-    const buildGun = (): THREE.Group => {
+    const pivots: THREE.Object3D[] = [];
+    const buildGun = (x: number, z: number, yDeck: number, yaw: number): void => {
       const gun = new THREE.Group();
-      const carriage = new THREE.Mesh(carriageGeo, carriageMat);
-      carriage.position.y = 0.075;
-      gun.add(carriage);
-      for (const sx of [-1, 1]) {
-        for (const sz of [-1, 1]) {
-          const w = new THREE.Mesh(wheelGeo, barrelMat);
-          w.position.set(sx * 0.1, 0.05, sz * 0.11);
-          gun.add(w);
-        }
-      }
-      return gun;
+      gun.position.set(x, yDeck, z);
+      gun.rotation.y = yaw;
+      const base = new THREE.Mesh(baseGeo, baseMat);
+      base.position.y = 0.02;
+      gun.add(base);
+      const pivot = new THREE.Group();
+      pivot.name = 'cannonPivot';
+      pivot.position.set(0.02, 0.055, 0);
+      pivot.add(new THREE.Mesh(barrelGeo, barrelMat));
+      gun.add(pivot);
+      pivots.push(pivot);
+      grp.add(gun);
     };
 
-    // A broadside gun: barrel points outward along local Z (port +z / stbd -z).
-    const makeBroadside = (t: number, side: 1 | -1): THREE.Group => {
-      const gun = buildGun();
-      const barrel = new THREE.Mesh(barrelGeo, barrelMat);
-      barrel.rotation.x = side > 0 ? Math.PI / 2 : -Math.PI / 2;
-      barrel.position.y = 0.16;
-      gun.add(barrel);
-      const breech = new THREE.Mesh(breechGeo, barrelMat);
-      breech.position.set(0, 0.16, side * -0.05);
-      gun.add(breech);
-      const x = xStern + (xBow - xStern) * t;
-      // Sit just inboard of the rail so the muzzle juts clearly out over the water.
-      gun.position.set(x, deckY(t) + 0.02, side * (beam(t) - 0.14));
-      return gun;
-    };
-    // A chase gun: barrel points forward (bow, +x) or aft (stern, -x).
-    const makeChaser = (atBow: boolean): THREE.Group => {
-      const gun = buildGun();
-      const barrel = new THREE.Mesh(barrelGeo, barrelMat);
-      barrel.rotation.z = atBow ? -Math.PI / 2 : Math.PI / 2;
-      barrel.position.y = 0.16;
-      gun.add(barrel);
-      const breech = new THREE.Mesh(breechGeo, barrelMat);
-      breech.position.set(atBow ? -0.05 : 0.05, 0.16, 0);
-      gun.add(breech);
-      const t = atBow ? 0.9 : 0.08;
-      gun.position.set(atBow ? xBow - 0.28 : xStern + 0.24, deckY(t) + 0.02, 0);
-      return gun;
-    };
-
+    // Broadside guns: port (+z, aim +z) and starboard (-z, aim -z).
     for (const t of [0.34, 0.6]) {
-      grp.add(makeBroadside(t, 1));
-      grp.add(makeBroadside(t, -1));
+      const x = xStern + (xBow - xStern) * t;
+      buildGun(x, beam(t) - 0.05, deckY(t), -Math.PI / 2);
+      buildGun(x, -(beam(t) - 0.05), deckY(t), Math.PI / 2);
     }
-    grp.add(makeChaser(true));
-    grp.add(makeChaser(false));
+    // Bow chaser (aim +x) and stern chaser (aim -x).
+    buildGun(xBow - 0.22, 0, deckY(0.9), 0);
+    buildGun(xStern + 0.18, 0, deckY(0.08), Math.PI);
 
+    grp.userData['cannonPivots'] = pivots;
     return grp;
+  }
+
+  private cannonballGeo(): THREE.SphereGeometry {
+    if (!this.cballGeo) {
+      this.cballGeo = new THREE.SphereGeometry(0.13, 12, 10);
+      this.sharedGeo.push(this.cballGeo);
+    }
+    return this.cballGeo;
+  }
+
+  private cannonballMat(): THREE.MeshStandardMaterial {
+    if (!this.cballMat) {
+      // A hot iron shot: dark metal with a faint ember glow so it stays readable
+      // against the water as it flies.
+      this.cballMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#161418'), roughness: 0.45, metalness: 0.6, emissive: new THREE.Color('#ff6a1e'), emissiveIntensity: 0.5 });
+      this.sharedMat.push(this.cballMat);
+    }
+    return this.cballMat;
+  }
+
+  private fxSphere(): THREE.IcosahedronGeometry {
+    if (!this.fxSphereGeo) {
+      this.fxSphereGeo = new THREE.IcosahedronGeometry(1, 2);
+      this.sharedGeo.push(this.fxSphereGeo);
+    }
+    return this.fxSphereGeo;
+  }
+
+  // A muzzle flash (bright additive pop) and an expanding smoke puff at a firing
+  // cannon, spawned when a new projectile appears near the shooter.
+  private spawnMuzzleFlash(x: number, y: number, t: number): void {
+    if (!this.scene) {
+      return;
+    }
+    const grp = new THREE.Group();
+    grp.position.set(x, this.waveHeight(x, y, t) + 0.42, y);
+    const flash = new THREE.Mesh(
+      this.fxSphere(),
+      new THREE.MeshBasicMaterial({ color: new THREE.Color('#ffdf9e'), transparent: true, opacity: 1, blending: THREE.AdditiveBlending, depthWrite: false }),
+    );
+    flash.scale.setScalar(0.42);
+    grp.add(flash);
+    const smoke = new THREE.Mesh(
+      this.fxSphere(),
+      new THREE.MeshStandardMaterial({ color: new THREE.Color('#e6e6e6'), transparent: true, opacity: 0.7, depthWrite: false, roughness: 1 }),
+    );
+    smoke.scale.setScalar(0.34);
+    grp.add(smoke);
+    this.scene.add(grp);
+    this.muzzleFx.push({ grp, flash, smoke, born: t, life: 1.1 });
+  }
+
+  private updateMuzzleFx(t: number): void {
+    for (let i = this.muzzleFx.length - 1; i >= 0; i--) {
+      const fx = this.muzzleFx[i];
+      const age = (t - fx.born) / fx.life;
+      if (age >= 1) {
+        this.scene?.remove(fx.grp);
+        (fx.flash.material as THREE.Material).dispose();
+        (fx.smoke.material as THREE.Material).dispose();
+        this.muzzleFx.splice(i, 1);
+        continue;
+      }
+      // Flash: a bright pop that vanishes in the first third of the life.
+      const fm = fx.flash.material as THREE.MeshBasicMaterial;
+      const fa = Math.max(0, 1 - age / 0.3);
+      fm.opacity = fa;
+      fx.flash.visible = fa > 0;
+      fx.flash.scale.setScalar(0.42 + age * 0.7);
+      // Smoke: expand, drift up and fade over the whole life.
+      const sm = fx.smoke.material as THREE.MeshStandardMaterial;
+      sm.opacity = 0.7 * (1 - age);
+      fx.smoke.scale.setScalar(0.34 + age * 1.5);
+      fx.smoke.position.y = age * 0.7;
+    }
+  }
+
+  // Render cannonballs in flight and spawn a muzzle flash for each new shot.
+  private syncProjectiles(t: number): void {
+    if (!this.scene) {
+      return;
+    }
+    const seen = new Set<string>();
+    for (const p of this.projectiles) {
+      seen.add(p.id);
+      let born = this.projSeen.get(p.id);
+      if (born === undefined) {
+        born = t;
+        this.projSeen.set(p.id, t);
+        // A brand-new shot: the shooter just fired (drives barrel elevation) and
+        // gets a muzzle flash at the ball's spawn point beside the hull.
+        this.lastFireAt.set(p.ownerId, t);
+        this.spawnMuzzleFlash(p.x, p.y, t);
+      }
+      let m = this.projectileMeshes.get(p.id);
+      if (!m) {
+        m = new THREE.Mesh(this.cannonballGeo(), this.cannonballMat());
+        this.projectileMeshes.set(p.id, m);
+        this.scene.add(m);
+      }
+      // A short lob over the projectile's ~1.1s life so it reads as a fired shot.
+      const arc = Math.sin(Math.PI * Math.min(1, (t - born) / 1.1));
+      m.position.set(p.x, this.waveHeight(p.x, p.y, t) + 0.4 + 1.1 * arc, p.y);
+    }
+    for (const [id, m] of this.projectileMeshes) {
+      if (!seen.has(id)) {
+        this.scene.remove(m);
+        this.projectileMeshes.delete(id);
+        this.projSeen.delete(id);
+      }
+    }
+    this.updateMuzzleFx(t);
   }
 
   // Stainless guard rails around the deck: stanchions carrying a lifeline wire,
@@ -1646,6 +1742,14 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       if (!g) {
         g = this.makeBoat();
         g.scale.setScalar(1.3);
+        // Cache the cannon elevation pivots so we can animate them each frame.
+        const pivots: THREE.Object3D[] = [];
+        g.traverse((o) => {
+          if (o.name === 'cannonPivot') {
+            pivots.push(o);
+          }
+        });
+        g.userData['cannonPivots'] = pivots;
         this.boatMeshes.set(boat.boatId, g);
       }
 
@@ -1709,6 +1813,24 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       const anchor = g.getObjectByName('anchor');
       if (anchor) {
         anchor.visible = !!boat.anchored && !boat.capsized && !boat.sunk;
+      }
+
+      // Cannon elevation: barrels sit level when ready and lift while reloading,
+      // easing back down to level as the gun crew finishes loading.
+      const pivots = g.userData['cannonPivots'] as THREE.Object3D[] | undefined;
+      if (pivots && pivots.length) {
+        const firedAt = this.lastFireAt.get(boat.boatId);
+        let elev = 0;
+        if (firedAt !== undefined) {
+          const progress = (t - firedAt) / this.CANNON_RELOAD_S;
+          if (progress < 1) {
+            elev = this.CANNON_MAX_ELEV * Math.sin(Math.PI * progress);
+          }
+        }
+        const k = 1 - Math.exp(-10 * dt);
+        for (const pv of pivots) {
+          pv.rotation.z += (elev - pv.rotation.z) * k;
+        }
       }
 
       const player = boat.boatId === this.playerBoatId;
@@ -2369,6 +2491,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     this.ensureWindStreaks();
     this.syncBoats(t, dt);
     this.syncBuoys(t);
+    this.syncProjectiles(t);
 
     // Recentre the water on the player and displace its vertices for real waves.
     const p = this.playerPos();
