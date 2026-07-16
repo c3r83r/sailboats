@@ -93,14 +93,23 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
   // line where the graded sky meets the fogged sea.
   private sky?: THREE.Mesh;
 
-  // Kielwater (wake): a foam ribbon trailing the player, rebuilt each frame from
-  // a short rolling history of stern positions.
+  // Kielwater (wake): two diverging foam crests (a Kelvin "V") left behind the
+  // boat. Each emission point spawns the pair of crests, which fan outward and
+  // fade as they age, then expire — so the wake is a spreading, dissolving wave
+  // trail, not a single stretched ribbon.
   private wake?: THREE.Mesh;
   private wakeGeo?: THREE.BufferGeometry;
   private wakeTex?: THREE.CanvasTexture;
-  private wakeTrail: { x: number; y: number }[] = [];
-  private wakeSpeed = 0; // smoothed hull speed (scene units/sec) driving foam opacity
-  private readonly WAKE_POINTS = 60;
+  private wakeAlpha?: Float32Array; // per-vertex fade, refreshed each frame
+  private wakePts: { x: number; z: number; px: number; pz: number; born: number }[] = [];
+  private wakePrevStern: { x: number; z: number } | null = null;
+  private wakeSpeed = 0; // smoothed hull speed (scene units/sec) driving foam
+  private readonly WAKE_MAX = 90; // max live crest points
+  private readonly WAKE_SPACING = 0.45; // emit a new crest every this many units
+  private readonly WAKE_LIFE = 2.8; // seconds before a crest fully fades away
+  private readonly WAKE_SPREAD = 1.15; // how fast (units/sec) crests fan outward
+  private readonly WAKE_BASE_HALF = 0.3; // crest offset at the stern (the V apex)
+  private readonly WAKE_THICK = 0.42; // radial half-thickness of each crest band
   // Bow wave (the foam "moustache" spreading from the bow) — a flat quad aimed
   // forward and scaled/faded with speed.
   private bowWave?: THREE.Mesh;
@@ -369,39 +378,65 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     this.scene?.add(this.sky);
   }
 
-  // Kielwater (wake): a tapering foam ribbon that trails the player. The geometry
-  // is a two-vertex-wide strip whose rows are re-placed along the boat's recent
-  // path every frame; the foam texture bakes in the soft edges and the fade to
-  // clear water at the tail, and the whole ribbon fades out when the boat slows.
+  // Kielwater (wake): two diverging crest ribbons (left & right arm) sharing one
+  // geometry. Each of the WAKE_MAX rows holds four vertices (inner/outer edge of
+  // each arm's crest band); their positions and per-vertex fade are rewritten
+  // every frame from the live emission points. A tiny shader multiplies the foam
+  // texture by the per-vertex fade so old crests dissolve cleanly.
   private buildWake(): void {
-    const P = this.WAKE_POINTS;
+    const N = this.WAKE_MAX;
     this.wakeGeo = new THREE.BufferGeometry();
-    this.wakeGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(P * 2 * 3), 3));
-    const uv = new Float32Array(P * 2 * 2);
-    for (let i = 0; i < P; i++) {
-      const v = i / (P - 1); // 0 at the tail, 1 at the boat
-      uv[(i * 2) * 2] = 0;
-      uv[(i * 2) * 2 + 1] = v;
-      uv[(i * 2 + 1) * 2] = 1;
-      uv[(i * 2 + 1) * 2 + 1] = v;
+    this.wakeGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(N * 4 * 3), 3));
+    const uv = new Float32Array(N * 4 * 2);
+    this.wakeAlpha = new Float32Array(N * 4);
+    for (let i = 0; i < N; i++) {
+      const v = i / (N - 1);
+      // 4 verts per row: L-inner, L-outer, R-inner, R-outer. u = 0 inner .. 1 outer.
+      const base = i * 4 * 2;
+      uv[base + 0] = 0; uv[base + 1] = v;
+      uv[base + 2] = 1; uv[base + 3] = v;
+      uv[base + 4] = 0; uv[base + 5] = v;
+      uv[base + 6] = 1; uv[base + 7] = v;
     }
     this.wakeGeo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    this.wakeGeo.setAttribute('aAlpha', new THREE.BufferAttribute(this.wakeAlpha, 1));
     const idx: number[] = [];
-    for (let i = 0; i < P - 1; i++) {
-      const a = i * 2;
-      const b = i * 2 + 1;
-      const c = (i + 1) * 2;
-      const d = (i + 1) * 2 + 1;
-      idx.push(a, c, b, b, c, d);
+    for (let i = 0; i < N - 1; i++) {
+      const a = i * 4;
+      const b = (i + 1) * 4;
+      // Left arm (verts +0 inner, +1 outer).
+      idx.push(a + 0, b + 0, a + 1, a + 1, b + 0, b + 1);
+      // Right arm (verts +2 inner, +3 outer).
+      idx.push(a + 2, b + 2, a + 3, a + 3, b + 2, b + 3);
     }
     this.wakeGeo.setIndex(idx);
     this.wakeTex = this.makeWakeTexture();
-    const mat = new THREE.MeshBasicMaterial({
-      map: this.wakeTex,
+    const mat = new THREE.ShaderMaterial({
       transparent: true,
-      opacity: 0,
       depthWrite: false,
       side: THREE.DoubleSide,
+      uniforms: { map: { value: this.wakeTex } },
+      vertexShader: `
+        attribute float aAlpha;
+        varying float vAlpha;
+        varying vec2 vUv;
+        void main() {
+          vAlpha = aAlpha;
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform sampler2D map;
+        varying float vAlpha;
+        varying vec2 vUv;
+        void main() {
+          vec4 tx = texture2D(map, vUv);
+          float a = tx.a * vAlpha;
+          if (a < 0.01) discard;
+          gl_FragColor = vec4(tx.rgb, a);
+        }
+      `,
     });
     this.sharedMat.push(mat);
     this.wake = new THREE.Mesh(this.wakeGeo, mat);
@@ -410,38 +445,30 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     this.scene?.add(this.wake);
   }
 
-  // Foam texture for the wake: white, with soft feathered side edges (u) and a
-  // lengthwise fade from turbulent near the boat (v=1) to clear at the tail
-  // (v=0), broken up by layered value-noise so it reads as churned foam clumps
-  // with fore-aft streaks (prop wash) rather than a flat grey stripe.
+  // Foam texture for the crest bands: a soft feathered stripe across the band
+  // (u: 0 inner .. 1 outer, bright in the middle) broken up along its length (v)
+  // into churned foam clumps so each crest reads as a wave, not a smooth beam.
   private makeWakeTexture(): THREE.CanvasTexture {
-    const W = 128;
-    const H = 256;
-    // Layered value noise: a few random lattices sampled with smooth (cosine)
-    // interpolation and summed, giving soft foam blobs at mixed scales.
-    const lattice = (cols: number, rows: number) => {
-      const g = new Float32Array(cols * rows);
-      for (let i = 0; i < g.length; i++) g[i] = Math.random();
-      return { g, cols, rows };
+    const W = 48;
+    const H = 160;
+    // A small smoothed 2D value-noise lattice for foam clumps.
+    const cols = 10;
+    const rows = 40;
+    const grid = new Float32Array(cols * rows);
+    for (let i = 0; i < grid.length; i++) grid[i] = Math.random();
+    const sm = (a: number, b: number, f: number) => {
+      const s = (1 - Math.cos(f * Math.PI)) * 0.5;
+      return a * (1 - s) + b * s;
     };
-    const layers = [lattice(8, 16), lattice(16, 34), lattice(32, 70)];
-    const weights = [0.5, 0.32, 0.18];
-    const smooth = (a: number, b: number, f: number) => {
-      const t = (1 - Math.cos(f * Math.PI)) * 0.5;
-      return a * (1 - t) + b * t;
-    };
-    const sample = (lay: { g: Float32Array; cols: number; rows: number }, u: number, v: number) => {
-      const fx = u * (lay.cols - 1);
-      const fy = v * (lay.rows - 1);
-      const x0 = Math.floor(fx);
-      const y0 = Math.floor(fy);
-      const x1 = Math.min(lay.cols - 1, x0 + 1);
-      const y1 = Math.min(lay.rows - 1, y0 + 1);
-      const tx = fx - x0;
-      const ty = fy - y0;
-      const top = smooth(lay.g[y0 * lay.cols + x0], lay.g[y0 * lay.cols + x1], tx);
-      const bot = smooth(lay.g[y1 * lay.cols + x0], lay.g[y1 * lay.cols + x1], tx);
-      return smooth(top, bot, ty);
+    const noise = (u: number, v: number) => {
+      const fx = u * (cols - 1);
+      const fy = v * (rows - 1);
+      const x0 = Math.floor(fx), y0 = Math.floor(fy);
+      const x1 = Math.min(cols - 1, x0 + 1), y1 = Math.min(rows - 1, y0 + 1);
+      const tx = fx - x0, ty = fy - y0;
+      const top = sm(grid[y0 * cols + x0], grid[y0 * cols + x1], tx);
+      const bot = sm(grid[y1 * cols + x0], grid[y1 * cols + x1], tx);
+      return sm(top, bot, ty);
     };
     const c = document.createElement('canvas');
     c.width = W;
@@ -450,21 +477,17 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     const img = ctx.createImageData(W, H);
     const d = img.data;
     for (let y = 0; y < H; y++) {
-      const v = y / (H - 1); // 0 tail, 1 boat  (flipY disabled below)
-      // Fade to clear at the tail, plus a bright dense churn band right behind
-      // the transom (v near 1).
-      const lenFade = Math.pow(v, 0.7);
-      const churn = 0.35 * Math.max(0, (v - 0.72) / 0.28); // extra brightness at the boat
+      const v = y / (H - 1);
       for (let x = 0; x < W; x++) {
         const u = x / (W - 1);
-        const edge = Math.sin(Math.PI * u); // 0 at the sides, 1 in the middle
-        const edgeFade = Math.pow(edge, 0.55);
-        let foam = 0;
-        for (let l = 0; l < layers.length; l++) foam += weights[l] * sample(layers[l], u, v);
-        // Fore-aft streaks (prop wash) from a stretched high-frequency band.
-        const streak = 0.75 + 0.25 * sample(layers[2], (u * 3) % 1, v * 0.5);
-        const base = edgeFade * lenFade * (0.25 + 0.9 * foam) * streak;
-        const a = Math.max(0, Math.min(1, base + churn * edgeFade));
+        const edge = Math.sin(Math.PI * u); // soft at both edges, bright centre
+        const soft = Math.pow(edge, 0.5);
+        // Clumpy foam: two octaves of noise, biased so there are bright crests
+        // and clear gaps rather than a uniform stripe.
+        const n = 0.6 * noise(u, v) + 0.4 * noise(u * 2.3, v * 2.3);
+        const clump = Math.max(0, Math.min(1, (n - 0.28) / 0.55));
+        const foam = 0.25 + 0.95 * clump;
+        const a = Math.max(0, Math.min(1, soft * foam));
         const i = (y * W + x) * 4;
         d[i] = 255;
         d[i + 1] = 255;
@@ -475,6 +498,8 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     ctx.putImageData(img, 0, 0);
     const tex = new THREE.CanvasTexture(c);
     tex.flipY = false;
+    tex.wrapS = THREE.ClampToEdgeWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
     tex.anisotropy = 4;
     tex.needsUpdate = true;
     return tex;
@@ -1554,7 +1579,8 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
         disp.headRad = targetHead;
         if (boat.boatId === this.playerBoatId) {
           this.camReady = false; // let the chase camera jump, not fly, to the boat
-          this.wakeTrail.length = 0; // and don't smear a wake across the jump
+          this.wakePts.length = 0; // and don't smear a wake across the jump
+          this.wakePrevStern = null;
           this.wakeSpeed = 0;
         }
       } else {
@@ -2051,91 +2077,106 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
   // Reshape the wake ribbon along the player's recent path and fade it in/out
   // with speed. Called every frame from update().
   private updateWake(dt: number, boatPos: THREE.Vector3, headRad: number, t: number): void {
-    if (!this.wake || !this.wakeGeo) {
+    if (!this.wake || !this.wakeGeo || !this.wakeAlpha) {
       return;
     }
-    const mat = this.wake.material as THREE.MeshBasicMaterial;
     // Stern point: a little behind the hull centre along its heading.
     const fx = Math.cos(headRad);
     const fz = Math.sin(headRad);
     const sternX = boatPos.x - fx * 1.1;
     const sternZ = boatPos.z - fz * 1.1;
+    // Perpendicular to the heading (on the water plane) — the crests spread along it.
+    const perpX = -fz;
+    const perpZ = fx;
 
-    const trail = this.wakeTrail;
-    if (trail.length === 0) {
-      for (let i = 0; i < this.WAKE_POINTS; i++) {
-        trail.push({ x: sternX, y: sternZ });
+    const pts = this.wakePts;
+
+    // Smooth the hull speed (units/sec) from the stern's frame-to-frame motion.
+    if (this.wakePrevStern) {
+      const md = Math.hypot(sternX - this.wakePrevStern.x, sternZ - this.wakePrevStern.z);
+      // A big jump is a teleport (respawn / lake change): wipe the trail so no
+      // wave streaks across the map.
+      if (md > this.TELEPORT_SNAP_DIST) {
+        pts.length = 0;
+        this.wakeSpeed = 0;
+        this.wakePrevStern = { x: sternX, z: sternZ };
+        if (this.bowWave) {
+          (this.bowWave.material as THREE.MeshBasicMaterial).opacity = 0;
+        }
+      } else {
+        const inst = dt > 0 ? md / dt : 0;
+        this.wakeSpeed += (inst - this.wakeSpeed) * (1 - Math.exp(-6 * dt));
       }
     }
-    const head = trail[trail.length - 1];
-    const moved = Math.hypot(sternX - head.x, sternZ - head.y);
-    // A big jump is a teleport, not sailing: restart the trail at the new spot so
-    // the ribbon doesn't stretch a foam streak across the whole scene.
-    if (moved > this.TELEPORT_SNAP_DIST) {
-      for (let i = 0; i < trail.length; i++) {
-        trail[i].x = sternX;
-        trail[i].y = sternZ;
-      }
-      this.wakeSpeed = 0;
-      (this.wake.material as THREE.MeshBasicMaterial).opacity = 0;
-      if (this.bowWave) {
-        (this.bowWave.material as THREE.MeshBasicMaterial).opacity = 0;
-      }
-      return;
+    this.wakePrevStern = { x: sternX, z: sternZ };
+
+    // Emit a fresh crest point when the stern has moved a spacing's worth AND the
+    // boat is actually making way (so a drifting/parked boat leaves no wake).
+    const last = pts.length ? pts[pts.length - 1] : null;
+    const movedFromLast = last ? Math.hypot(sternX - last.x, sternZ - last.z) : Infinity;
+    if (this.wakeSpeed > 0.35 && movedFromLast >= this.WAKE_SPACING) {
+      pts.push({ x: sternX, z: sternZ, px: perpX, pz: perpZ, born: t });
     }
-    // Smooth the hull speed (units/sec) that drives foam opacity.
-    const inst = dt > 0 ? moved / dt : 0;
-    this.wakeSpeed += (inst - this.wakeSpeed) * (1 - Math.exp(-6 * dt));
-    // Drop a new trail point once the stern has moved far enough, so the ribbon
-    // keeps a roughly even spacing regardless of frame rate.
-    if (moved > 0.35) {
-      trail.push({ x: sternX, y: sternZ });
-      while (trail.length > this.WAKE_POINTS) {
-        trail.shift();
-      }
-    } else {
-      head.x = sternX;
-      head.y = sternZ;
+    // Age out expired crests (oldest first) and cap the count.
+    while (pts.length && t - pts[0].born > this.WAKE_LIFE) {
+      pts.shift();
+    }
+    while (pts.length > this.WAKE_MAX) {
+      pts.shift();
     }
 
-    const P = this.WAKE_POINTS;
+    // Rebuild both diverging arms from the live crest points.
     const pos = this.wakeGeo.attributes['position'].array as Float32Array;
-    for (let i = 0; i < P; i++) {
-      // Map trail (oldest->newest) onto rows, padding the tail if it is short.
-      const ti = trail.length - P + i;
-      const cur = trail[ti >= 0 ? ti : 0];
-      const nxt = trail[Math.min(trail.length - 1, (ti >= 0 ? ti : 0) + 1)];
-      let dx = nxt.x - cur.x;
-      let dz = nxt.y - cur.y;
-      const dl = Math.hypot(dx, dz) || 1;
-      dx /= dl;
-      dz /= dl;
-      // Perpendicular to the local path direction (on the water plane).
-      const px = -dz;
-      const pz = dx;
-      const v = i / (P - 1); // 0 tail, 1 boat
-      // Narrow at the transom, fanning out astern (Kelvin wake), widening more
-      // toward the tail then easing so the far end doesn't balloon.
-      const spread = Math.pow(1 - v, 0.85);
-      const halfW = 0.32 + spread * 3.1;
-      const cx = cur.x;
-      const cz = cur.y;
-      const y = this.waveHeight(cx, cz, t) + 0.08;
-      const a = i * 2 * 3;
-      const b = (i * 2 + 1) * 3;
-      pos[a] = cx + px * halfW;
-      pos[a + 1] = y;
-      pos[a + 2] = cz + pz * halfW;
-      pos[b] = cx - px * halfW;
-      pos[b + 1] = y;
-      pos[b + 2] = cz - pz * halfW;
+    const alpha = this.wakeAlpha;
+    const N = this.WAKE_MAX;
+    const n = pts.length;
+    for (let i = 0; i < N; i++) {
+      const row = i * 4;
+      if (i >= n) {
+        // Unused row: collapse it onto the newest point with zero alpha.
+        const p = n ? pts[n - 1] : null;
+        const cx = p ? p.x : sternX;
+        const cz = p ? p.z : sternZ;
+        const y = this.waveHeight(cx, cz, t) + 0.08;
+        for (let k = 0; k < 4; k++) {
+          pos[(row + k) * 3] = cx;
+          pos[(row + k) * 3 + 1] = y;
+          pos[(row + k) * 3 + 2] = cz;
+          alpha[row + k] = 0;
+        }
+        continue;
+      }
+      const p = pts[i];
+      const age = t - p.born;
+      const lifeT = this.clamp01(age / this.WAKE_LIFE);
+      // Fade in briefly at birth, then dissolve toward the end of life.
+      const fade = Math.min(1, lifeT / 0.08) * (1 - lifeT) * (1 - lifeT);
+      const a = fade * Math.min(1, Math.max(0, (this.wakeSpeed - 0.2) / 1.6)) * 0.95;
+      // Crests fan outward as they age (the diverging Kelvin arms).
+      const spread = this.WAKE_BASE_HALF + age * this.WAKE_SPREAD;
+      const th = this.WAKE_THICK;
+      // Left arm: inner/outer edges of the crest band at +perp*spread.
+      const lIn = spread - th;
+      const lOut = spread + th;
+      const lInX = p.x + p.px * lIn, lInZ = p.z + p.pz * lIn;
+      const lOutX = p.x + p.px * lOut, lOutZ = p.z + p.pz * lOut;
+      // Right arm at -perp*spread.
+      const rInX = p.x - p.px * lIn, rInZ = p.z - p.pz * lIn;
+      const rOutX = p.x - p.px * lOut, rOutZ = p.z - p.pz * lOut;
+      const set = (slot: number, x: number, z: number) => {
+        const o = (row + slot) * 3;
+        pos[o] = x;
+        pos[o + 1] = this.waveHeight(x, z, t) + 0.08;
+        pos[o + 2] = z;
+        alpha[row + slot] = a;
+      };
+      set(0, lInX, lInZ);
+      set(1, lOutX, lOutZ);
+      set(2, rInX, rInZ);
+      set(3, rOutX, rOutZ);
     }
     this.wakeGeo.attributes['position'].needsUpdate = true;
-    this.wakeGeo.computeVertexNormals();
-    // Fade the foam in with speed; invisible when nearly stopped. Shows from a
-    // gentle glide and saturates by cruising speed.
-    const target = Math.max(0, Math.min(0.95, (this.wakeSpeed - 0.25) / 2.2));
-    mat.opacity += (target - mat.opacity) * (1 - Math.exp(-5 * dt));
+    this.wakeGeo.attributes['aAlpha'].needsUpdate = true;
 
     // Bow wave: sit the moustache quad so its stem lands at the bow, aimed along
     // the heading, growing with speed and sweeping foam back along the hull.
