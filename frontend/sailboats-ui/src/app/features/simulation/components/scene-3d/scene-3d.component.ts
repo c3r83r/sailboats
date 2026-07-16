@@ -99,6 +99,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
   private sharedGeo: THREE.BufferGeometry[] = [];
   private sharedMat: THREE.Material[] = [];
   private sailTexture?: THREE.CanvasTexture;
+  private jibSailTexture?: THREE.CanvasTexture;
 
   // Manual camera orbit around the boat, driven by the 9 / 0 keys.
   private orbit = 0; // azimuth offset (radians) added to the astern view
@@ -205,6 +206,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     this.sharedGeo.forEach((g) => g.dispose());
     this.sharedMat.forEach((m) => m.dispose());
     this.sailTexture?.dispose();
+    this.jibSailTexture?.dispose();
     this.waterGeo?.dispose();
     this.windGeo?.dispose();
     this.renderer?.dispose();
@@ -725,7 +727,12 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     main.name = 'main';
     rig.add(main);
 
-    const jib = this.makeSailMesh(sailMat, 6, 12);
+    // The jib gets its own material/texture (same cloth, plus a navy leech tape)
+    // so the extra band doesn't also show up on the mainsail.
+    const jibMat = sailMat.clone();
+    jibMat.map = this.getJibSailTexture();
+    this.sharedMat.push(jibMat);
+    const jib = this.makeSailMesh(jibMat, 6, 12);
     jib.name = 'jib';
     rig.add(jib);
 
@@ -830,16 +837,10 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     return group;
   }
 
-  // Sail cloth texture: horizontal panel seams (bryty) plus a few heavier batten
-  // lines toward the leech (listwy). Shared by all sails.
-  private getSailTexture(): THREE.CanvasTexture {
-    if (this.sailTexture) {
-      return this.sailTexture;
-    }
-    const c = document.createElement('canvas');
-    c.width = 128;
-    c.height = 256;
-    const ctx = c.getContext('2d')!;
+  // Draws the common cloth pattern (panel seams, battens, foot band) shared by
+  // both sail textures. u=0 is the luff (canvas left), u=1 the leech (canvas
+  // right); v=0 is the foot (canvas bottom), v=1 the head (canvas top).
+  private drawSailCloth(ctx: CanvasRenderingContext2D): void {
     ctx.fillStyle = '#f5f8fc';
     ctx.fillRect(0, 0, 128, 256);
     // Panel seams: faint horizontal cloth panels across the whole sail.
@@ -867,16 +868,45 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     ctx.fillRect(0, 248, 128, 8);
     ctx.fillStyle = 'rgba(22, 34, 92, 0.55)';
     ctx.fillRect(0, 244, 128, 3);
+  }
+
+  // Sail cloth texture for the mainsail (grot). Shared by all boats' mainsails.
+  private getSailTexture(): THREE.CanvasTexture {
+    if (this.sailTexture) {
+      return this.sailTexture;
+    }
+    const c = document.createElement('canvas');
+    c.width = 128;
+    c.height = 256;
+    this.drawSailCloth(c.getContext('2d')!);
+    const tex = new THREE.CanvasTexture(c);
+    tex.anisotropy = 4;
+    this.sailTexture = tex;
+    return tex;
+  }
+
+  // Sail cloth texture for the jib (fok): the same cloth as the mainsail, plus
+  // a navy leech band (lik wolny) — on the jib the leech is a free edge (not
+  // laced to a spar like the mainsail's leech/foot area near the boom), so it
+  // gets its own boltrope tape mirroring the foot band.
+  private getJibSailTexture(): THREE.CanvasTexture {
+    if (this.jibSailTexture) {
+      return this.jibSailTexture;
+    }
+    const c = document.createElement('canvas');
+    c.width = 128;
+    c.height = 256;
+    const ctx = c.getContext('2d')!;
+    this.drawSailCloth(ctx);
     // Leech band (lik wolny): the same navy tape mirrored along the leech edge
-    // (u=1 => canvas right side), since on the jib the leech is a free edge too
-    // (not laced to a spar) and gets a matching boltrope tape in reality.
+    // (u=1 => canvas right side).
     ctx.fillStyle = '#16225c';
     ctx.fillRect(120, 0, 8, 256);
     ctx.fillStyle = 'rgba(22, 34, 92, 0.55)';
     ctx.fillRect(117, 0, 3, 256);
     const tex = new THREE.CanvasTexture(c);
     tex.anisotropy = 4;
-    this.sailTexture = tex;
+    this.jibSailTexture = tex;
     return tex;
   }
 
