@@ -238,16 +238,15 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     }
     this.islandMeshes.clear();
 
-    const wallMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#9c7d42'), roughness: 0.95 });
-    const topMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#6f9350'), roughness: 1 });
-    this.sharedMat.push(wallMat, topMat);
+    const landMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, side: THREE.DoubleSide });
+    this.sharedMat.push(landMat);
 
     let idx = 0;
     for (const island of this.islands) {
       if (!island.points || island.points.length < 3) {
         continue;
       }
-      // Centroid + radius for a simple raised hill.
+      // Centroid for a locally-centred mound.
       let cx = 0;
       let cy = 0;
       for (const p of island.points) {
@@ -256,32 +255,76 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       }
       cx /= island.points.length;
       cy /= island.points.length;
-      let r = 0;
-      for (const p of island.points) {
-        r = Math.max(r, Math.hypot(p.x - cx, p.y - cy));
-      }
 
-      // Build a flat-topped shape from the actual polygon, extruded up from the sea bed.
-      const shape = new THREE.Shape();
-      island.points.forEach((p, i) => {
-        const lx = p.x - cx;
-        const lz = p.y - cy;
-        if (i === 0) {
-          shape.moveTo(lx, lz);
-        } else {
-          shape.lineTo(lx, lz);
-        }
-      });
-      shape.closePath();
-      const height = Math.max(1.1, r * 0.5);
-      const geo = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: true, bevelThickness: 0.3, bevelSize: 0.4, bevelSegments: 2 });
-      geo.rotateX(-Math.PI / 2); // shape was in XY; lay it on the ground, extrude up
-      const mesh = new THREE.Mesh(geo, [wallMat, topMat]);
-      mesh.position.set(cx, -0.2, cy);
+      // Smoothly sloped mound following the polygon: sandy shore rising to a
+      // grassy crown, so islands read as gentle hills rather than blocky cliffs.
+      const geo = this.buildIslandGeometry(island.points, cx, cy);
+      const mesh = new THREE.Mesh(geo, landMat);
+      mesh.position.set(cx, 0, cy);
       this.scene?.add(mesh);
       this.islandMeshes.set(island.id ?? `isl-${idx}`, mesh);
       idx++;
     }
+  }
+
+  // Build a smoothly sloped island mound from its shoreline polygon: concentric
+  // rings scaled toward the centroid and lifted on a dome profile, with sandy
+  // shores blending up to a grassy top. No vertical walls, so no "cliff" look.
+  private buildIslandGeometry(points: { x: number; y: number }[], cx: number, cy: number): THREE.BufferGeometry {
+    const n = points.length;
+    let r = 0;
+    for (const p of points) {
+      r = Math.max(r, Math.hypot(p.x - cx, p.y - cy));
+    }
+    const peakH = Math.min(1.6, Math.max(0.5, r * 0.28));
+    const scales = [1.0, 0.72, 0.46, 0.22];
+    const dome = (s: number) => 1 - (3 * s * s - 2 * s * s * s); // 1 at centre, 0 at shore
+    const sand = new THREE.Color('#d8c68f');
+    const grass = new THREE.Color('#6f9350');
+
+    const positions: number[] = [];
+    const colors: number[] = [];
+    const pushV = (x: number, y: number, z: number) => {
+      positions.push(x, y, z);
+      const tt = THREE.MathUtils.clamp(y / peakH, 0, 1);
+      const c = sand.clone().lerp(grass, THREE.MathUtils.smoothstep(tt, 0.06, 0.5));
+      colors.push(c.r, c.g, c.b);
+    };
+
+    const ringStart: number[] = [];
+    for (let ri = 0; ri < scales.length; ri++) {
+      ringStart.push(positions.length / 3);
+      const sc = scales[ri];
+      const y = ri === 0 ? -0.06 : peakH * dome(sc); // shore dips just under water
+      for (let j = 0; j < n; j++) {
+        pushV((points[j].x - cx) * sc, y, (points[j].y - cy) * sc);
+      }
+    }
+    const peakIndex = positions.length / 3;
+    pushV(0, peakH, 0);
+
+    const indices: number[] = [];
+    for (let ri = 0; ri < scales.length - 1; ri++) {
+      const a = ringStart[ri];
+      const b = ringStart[ri + 1];
+      for (let j = 0; j < n; j++) {
+        const j2 = (j + 1) % n;
+        indices.push(a + j, a + j2, b + j2);
+        indices.push(a + j, b + j2, b + j);
+      }
+    }
+    const last = ringStart[scales.length - 1];
+    for (let j = 0; j < n; j++) {
+      const j2 = (j + 1) % n;
+      indices.push(last + j, last + j2, peakIndex);
+    }
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    geo.setIndex(indices);
+    geo.computeVertexNormals();
+    return geo;
   }
 
   // Interpolate a value from [t, value] control points (t ascending, 0..1).
@@ -1072,7 +1115,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
         // Tack lifted well clear of the foredeck so the sail can never sweep
         // down through the hull; the luff runs the full forestay to the masthead.
         const tack = new THREE.Vector3(1.3, 0.55, 0);
-        const head = new THREE.Vector3(0.28, 3.55, 0);
+        const fullHead = new THREE.Vector3(0.28, 3.55, 0);
         const jibFoot = 0.72;
         const jibAngle = 0.22 + (1 - jibSheet) * 0.85;
         const fullClew = new THREE.Vector3(
@@ -1080,8 +1123,13 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
           0.82,
           jibSide * Math.sin(jibAngle) * jibFoot,
         );
-        // Roller furl: clew rolls in toward the tack/stay as the sail furls.
-        const clew = tack.clone().lerp(fullClew, rolled);
+        // Furling reduces the whole sail proportionally: the head slides down the
+        // forestay and the clew comes in toward the tack by the same factor, so
+        // the foot (lik dolny) and leech (lik wolny) shrink equally instead of
+        // only the foot collapsing.
+        const set = 0.1 + 0.9 * rolled;
+        const head = tack.clone().lerp(fullHead, set);
+        const clew = tack.clone().lerp(fullClew, set);
         const power = rolled * (0.4 + 0.6 * jibSheet);
         // A fuller, more convex jib than the main; fuller the deeper the course.
         const belly = jibLuff ? 0.06 : 0.5 * power * camberScale;

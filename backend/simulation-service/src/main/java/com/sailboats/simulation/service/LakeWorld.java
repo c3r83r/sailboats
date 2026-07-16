@@ -34,7 +34,7 @@ public class LakeWorld {
     private final double worldHeight;
     private final boolean botsEnabled;
     private static final double DELTA_SECONDS = 0.05;
-    private static final double COLLISION_DISTANCE = 1.2;
+    private static final double COLLISION_DISTANCE = 1.5;
     private static final double BASE_DRIFT = 0.05;
     private static final double MAX_SPEED = 2.4;
 
@@ -478,20 +478,36 @@ public class LakeWorld {
                     ny = dy / distance;
                 }
 
-                double overlap = (COLLISION_DISTANCE - distance) / 2.0;
-                a.setX(a.getX() - nx * overlap);
-                a.setY(a.getY() - ny * overlap);
-                b.setX(b.getX() + nx * overlap);
-                b.setY(b.getY() + ny * overlap);
+                double overlap = COLLISION_DISTANCE - distance;
+                double push = overlap / 2.0 + 0.01; // fully separate, small bias so they don't stick
+                a.setX(a.getX() - nx * push);
+                a.setY(a.getY() - ny * push);
+                b.setX(b.getX() + nx * push);
+                b.setY(b.getY() + ny * push);
 
-                double avx = Math.cos(Math.toRadians(a.getHeading())) * a.getSpeed();
-                double avy = Math.sin(Math.toRadians(a.getHeading())) * a.getSpeed();
-                double bvx = Math.cos(Math.toRadians(b.getHeading())) * b.getSpeed();
-                double bvy = Math.sin(Math.toRadians(b.getHeading())) * b.getSpeed();
+                double afx = Math.cos(Math.toRadians(a.getHeading()));
+                double afy = Math.sin(Math.toRadians(a.getHeading()));
+                double bfx = Math.cos(Math.toRadians(b.getHeading()));
+                double bfy = Math.sin(Math.toRadians(b.getHeading()));
+                double avx = afx * a.getSpeed();
+                double avy = afy * a.getSpeed();
+                double bvx = bfx * b.getSpeed();
+                double bvy = bfy * b.getSpeed();
                 double closing = (avx - bvx) * nx + (avy - bvy) * ny;
 
-                a.setSpeed(a.getSpeed() * 0.5);
-                b.setSpeed(b.getSpeed() * 0.5);
+                // Solid hulls: cancel the part of each boat's forward motion that
+                // drives it into the other (n points from a to b), so the boats
+                // stop against each other instead of sailing through like sponges.
+                double aInto = afx * nx + afy * ny; // a's bow aimed toward b
+                if (aInto > 0) {
+                    a.setSpeed(a.getSpeed() * Math.max(0.0, 1.0 - aInto));
+                }
+                double bInto = -(bfx * nx + bfy * ny); // b's bow aimed toward a
+                if (bInto > 0) {
+                    b.setSpeed(b.getSpeed() * Math.max(0.0, 1.0 - bInto));
+                }
+                a.setSpeed(a.getSpeed() * 0.85);
+                b.setSpeed(b.getSpeed() * 0.85);
 
                 if (closing <= COLLISION_CLOSING_THRESHOLD) {
                     continue;
