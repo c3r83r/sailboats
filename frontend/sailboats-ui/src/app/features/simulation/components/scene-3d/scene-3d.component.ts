@@ -559,13 +559,13 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     rig.name = 'rig';
     group.add(rig);
 
-    // Mast: tall and slim.
+    // Mast: tall and slim (masthead ~1.4x the hull length above the waterline).
     const mastMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#d8dde2'), roughness: 0.45, metalness: 0.4 });
-    const mastGeo = new THREE.CylinderGeometry(0.028, 0.036, 2.75, 10);
+    const mastGeo = new THREE.CylinderGeometry(0.026, 0.038, 3.85, 10);
     this.sharedGeo.push(mastGeo);
     this.sharedMat.push(mastMat);
     const mast = new THREE.Mesh(mastGeo, mastMat);
-    mast.position.set(0.25, 1.37, 0);
+    mast.position.set(0.25, 1.9, 0);
     rig.add(mast);
 
     // Boom: a spar along the foot of the mainsail, re-aimed every frame.
@@ -596,14 +596,14 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
 
     // Standing rigging (olinowanie stałe): forestay, backstay, cap shrouds and
     // spreaders. Fixed wires that hold the mast up; they heel with the boat.
-    const mastHead = new THREE.Vector3(0.25, 2.6, 0);
-    const hounds = new THREE.Vector3(0.25, 1.9, 0);
+    const mastHead = new THREE.Vector3(0.25, 3.68, 0);
+    const hounds = new THREE.Vector3(0.25, 2.55, 0);
     const bowTack = new THREE.Vector3(1.34, 0.34, 0);
     const stern = new THREE.Vector3(-1.14, 0.42, 0);
     const chainPort = new THREE.Vector3(0.12, 0.34, 0.44);
     const chainStbd = new THREE.Vector3(0.12, 0.34, -0.44);
-    const spreadPort = new THREE.Vector3(0.25, 1.88, 0.28);
-    const spreadStbd = new THREE.Vector3(0.25, 1.88, -0.28);
+    const spreadPort = new THREE.Vector3(0.25, 2.5, 0.3);
+    const spreadStbd = new THREE.Vector3(0.25, 2.5, -0.3);
 
     const wireMat = new THREE.LineBasicMaterial({ color: 0x1a140a, transparent: true, opacity: 0.5 });
     this.sharedMat.push(wireMat);
@@ -626,7 +626,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     spreadGeo.rotateX(Math.PI / 2); // lie across the beam (local Z)
     this.sharedGeo.push(spreadGeo);
     const spreaders = new THREE.Mesh(spreadGeo, spreadMat);
-    spreaders.position.set(0.25, 1.88, 0);
+    spreaders.position.set(0.25, 2.5, 0);
     rig.add(spreaders);
 
     // Roller-furling foil + furled cloth on the forestay: a cylinder along the
@@ -697,6 +697,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     flutter: number,
     phase: number,
     twist: number = 0.14,
+    roach: number = 0,
   ): void {
     const geo = mesh.geometry as THREE.BufferGeometry;
     const pos = geo.attributes['position'] as THREE.BufferAttribute;
@@ -711,6 +712,11 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       Lv.copy(tack).lerp(head, v);
       Tv.copy(clew).lerp(head, v);
       p.copy(Lv).lerp(Tv, u);
+      // Roach: a convex leech (as a real mainsail has), bulging aft, strongest
+      // mid-height and only near the leech (u -> 1). -x is toward the stern.
+      if (roach) {
+        p.x -= roach * Math.sin(Math.PI * v) * u * u;
+      }
       // Aerofoil camber: draft biased ~40% aft of the luff, and tapered near the
       // head and foot so the sail stays flat where it is attached (keeps the
       // foot from bulging down through the deck/hull).
@@ -865,7 +871,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       main.visible = show;
       // The boom is a fixed spar: it stays on the mast even when the sail is
       // furled (it just rests near the centreline).
-      const boomY = 0.92;
+      const boomY = 0.95;
       const foot = 1.05;
       const boomAngle = show ? 0.12 + (1 - mainSheet) * 0.95 : 0.1;
       const tack = new THREE.Vector3(0.25, boomY, 0);
@@ -879,13 +885,14 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
         this.alignSpar(boom, tack, clew);
       }
       if (show) {
-        // Tall, higher-cut main running well up the taller mast.
-        const headY = boomY + 1.55 * (0.62 + 0.38 * mainDeploy);
+        // Tall, high-aspect main running well up the taller mast, with a
+        // convex (roached) leech like a real mainsail.
+        const headY = boomY + 2.45 * (0.6 + 0.4 * mainDeploy);
         const head = new THREE.Vector3(0.25, headY, 0);
         const power = mainDeploy * (0.35 + 0.65 * mainSheet);
         const belly = mainLuff ? 0.05 : 0.34 * power;
         const flutter = mainLuff ? 0.14 * gust : 0.02;
-        this.updateSail(main, tack, head, clew, lee, belly, flutter, t, 0.1);
+        this.updateSail(main, tack, head, clew, lee, belly, flutter, t, 0.12, 0.22);
         // Mainsheet: from the boom clew down to the traveller on the cockpit sole.
         if (mainSheetLine) {
           mainSheetLine.visible = true;
@@ -908,9 +915,9 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       if (show) {
         // Tack lifted well clear of the foredeck so the sail can never sweep
         // down through the hull; the luff still rides the forestay.
-        const tack = new THREE.Vector3(1.3, 0.52, 0);
-        const head = new THREE.Vector3(0.3, 2.35, 0);
-        const jibFoot = 0.7;
+        const tack = new THREE.Vector3(1.3, 0.55, 0);
+        const head = new THREE.Vector3(0.32, 3.3, 0);
+        const jibFoot = 0.72;
         const jibAngle = 0.22 + (1 - jibSheet) * 0.85;
         const fullClew = new THREE.Vector3(
           1.3 - Math.cos(jibAngle) * jibFoot,
@@ -1001,9 +1008,9 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     const boatMesh = this.playerBoatId ? this.boatMeshes.get(this.playerBoatId) : undefined;
     const h = ((player ? player.heading : 90) * Math.PI) / 180;
     const boatPos = boatMesh ? boatMesh.position : new THREE.Vector3(p.x, this.waveHeight(p.x, p.y, t), p.y);
-    const camTarget = new THREE.Vector3(boatPos.x, boatPos.y + 1.3, boatPos.z);
-    const camDist = 9.5;
-    const camHeight = 4.9;
+    const camTarget = new THREE.Vector3(boatPos.x, boatPos.y + 1.9, boatPos.z);
+    const camDist = 11;
+    const camHeight = 5.6;
 
     // Advance the manual orbit (9 / 0 keys) using real elapsed time.
     const dt = this.lastTime ? Math.min(0.05, t - this.lastTime) : 0.016;
