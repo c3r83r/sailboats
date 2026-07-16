@@ -7,6 +7,7 @@ import { Store } from '@ngrx/store';
 import { combineLatest } from 'rxjs';
 import { ControlPanelComponent } from './features/simulation/components/control-panel/control-panel.component';
 import { WaterCanvasComponent } from './features/simulation/components/water-canvas/water-canvas.component';
+import { Scene3dComponent } from './features/simulation/components/scene-3d/scene-3d.component';
 import { AuthService } from './core/services/auth.service';
 import { PublicStatsService } from './core/services/public-stats.service';
 import { SimulationWsService } from './core/services/simulation-ws.service';
@@ -20,7 +21,7 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
 @Component({
   selector: 'app-game',
   standalone: true,
-  imports: [CommonModule, AsyncPipe, FormsModule, RouterLink, ControlPanelComponent, WaterCanvasComponent],
+  imports: [CommonModule, AsyncPipe, FormsModule, RouterLink, ControlPanelComponent, WaterCanvasComponent, Scene3dComponent],
   template: `
     <main class="layout">
       <div class="welcome" *ngIf="!started">
@@ -72,7 +73,7 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
               <h3>{{ col.label }}</h3>
               <ul class="lake-list">
                 <li
-                  *ngFor="let l of lakesOf(col.size)"
+                  *ngFor="let l of lakesOf(col.size); trackBy: trackByLakeId"
                   [class.current]="l.id === currentLakeId"
                   (click)="joinLake(l.id)">
                   <span class="ll-name">{{ l.name }}</span>
@@ -190,6 +191,7 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
 
         <div class="canvas-stage">
           <app-water-canvas
+            *ngIf="viewMode === '2d'"
             [boats]="(boats$ | async) ?? []"
             [projectiles]="(projectiles$ | async) ?? []"
             [buoys]="(buoys$ | async) ?? []"
@@ -205,6 +207,30 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
             [jibState]="jibState"
             [heel]="heel">
           </app-water-canvas>
+          <app-scene-3d
+            *ngIf="viewMode === '3d'"
+            [boats]="(boats$ | async) ?? []"
+            [projectiles]="(projectiles$ | async) ?? []"
+            [buoys]="(buoys$ | async) ?? []"
+            [islands]="(islands$ | async) ?? []"
+            [worldWidth]="((world$ | async)?.width) ?? 28"
+            [worldHeight]="((world$ | async)?.height) ?? 15.75"
+            [windDirection]="windDirection"
+            [windStrength]="windStrength"
+            [fill]="fullscreen"
+            [controls]="controls"
+            [playerBoatId]="playerBoatId"
+            [mainState]="mainState"
+            [jibState]="jibState"
+            [heel]="heel">
+          </app-scene-3d>
+          <button
+            type="button"
+            class="view-toggle"
+            (click)="toggleViewMode()"
+            [title]="viewMode === '2d' ? 'Przełącz na widok 3D' : 'Przełącz na widok 2D'">
+            {{ viewMode === '2d' ? '3D' : '2D' }}
+          </button>
           <button
             type="button"
             class="fs-btn"
@@ -233,7 +259,8 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
           [cannonCooldown]="cannonCooldown"
           [armedSide]="chargingSide"
           [windDirection]="(wind$ | async)?.direction ?? 0"
-          [windStrength]="(wind$ | async)?.strength ?? 0">
+          [windStrength]="(wind$ | async)?.strength ?? 0"
+          [heel]="playerHeelDeg">
         </app-control-panel>
       </section>
     </main>
@@ -380,6 +407,23 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
     .lake-btn:disabled {
       opacity: 0.45;
       cursor: not-allowed;
+    }
+
+    .about-link {
+      padding: 6px 12px;
+      border-radius: 8px;
+      border: 1px solid rgba(143, 227, 255, 0.25);
+      background: rgba(8, 18, 30, 0.4);
+      color: rgba(216, 244, 255, 0.85);
+      font-size: 0.8rem;
+      font-weight: 700;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+
+    .about-link:hover {
+      color: #eaf6ff;
+      background: rgba(143, 227, 255, 0.16);
     }
 
     .welcome {
@@ -754,6 +798,33 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
       transform: translateY(-1px);
     }
 
+    .view-toggle {
+      position: absolute;
+      top: 12px;
+      right: 58px;
+      z-index: 5;
+      height: 38px;
+      min-width: 42px;
+      padding: 0 12px;
+      display: grid;
+      place-items: center;
+      border-radius: 10px;
+      border: 1px solid rgba(143, 227, 255, 0.35);
+      background: rgba(8, 24, 40, 0.55);
+      color: #d8f4ff;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      font-size: 0.82rem;
+      cursor: pointer;
+      backdrop-filter: blur(6px);
+      transition: background 0.15s ease, transform 0.15s ease;
+    }
+
+    .view-toggle:hover {
+      background: rgba(143, 227, 255, 0.22);
+      transform: translateY(-1px);
+    }
+
     /* Fullscreen: lake fills the viewport, panels float semi-transparent over it. */
     .content.fullscreen {
       position: fixed;
@@ -913,8 +984,8 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
       margin: 0;
       padding: 11px 14px;
       border-radius: 12px;
-      background: rgba(11, 38, 62, 0.5);
-      border: 1px solid rgba(143, 227, 255, 0.12);
+      background: rgba(11, 38, 62, 0.62);
+      border: 1px solid rgba(143, 227, 255, 0.18);
       backdrop-filter: blur(6px);
       font-size: 0.86rem;
       display: flex;
@@ -923,7 +994,7 @@ export type PointOfSail = 'irons' | 'closehaul' | 'close' | 'beam' | 'broad' | '
       align-items: center;
     }
 
-    .kbd-help span { opacity: 0.85; }
+    .kbd-help span { opacity: 0.95; }
 
     .kbd-help b {
       display: inline-block;
@@ -975,6 +1046,8 @@ export class AppComponent implements OnInit, OnDestroy {
   started = false;
   // Fullscreen mode: lake fills the screen, side panels float over it.
   fullscreen = false;
+  // Rendering view: flat top-down 2D canvas or the WebGL 3D scene (toggle).
+  viewMode: '2d' | '3d' = '2d';
   authMode: 'login' | 'register' = 'login';
   email = '';
   password = '';
@@ -1023,7 +1096,8 @@ export class AppComponent implements OnInit, OnDestroy {
   mainState: SailVisualState = 'down';
   jibState: SailVisualState = 'down';
   pointOfSail: PointOfSail = 'irons';
-  heel = 0; // -1..+1, positive = lean to starboard (player frame)
+  heel = 0; // -1..+1, positive = lean to starboard (player frame) — drives 3D/2D visuals
+  playerHeelDeg = 0; // server-computed heel angle in degrees (signed) — drives the control deck readout
   autoTrim = false; // T key: auto-trim assist keeps both sheets at the optimum
   playerHealth = 100;
 
@@ -1078,7 +1152,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
   private readonly pressed = new Set<string>();
   private loopHandle: ReturnType<typeof setInterval> | null = null;
-  private lastSent = { rudder: 0, sailTrim: 0, anchored: true };
+  private lastSent = { rudder: 0, sailTrim: 0, heelLoad: 0, anchored: true };
   // Disconnect a player who leaves the page (tab hidden) for too long.
   private awayTimer: ReturnType<typeof setTimeout> | null = null;
   private awayDisconnected = false;
@@ -1132,6 +1206,7 @@ export class AppComponent implements OnInit, OnDestroy {
         this.playerHeading = player.heading;
         this.playerSpeed = player.speed;
         this.playerHealth = player.health ?? 100;
+        this.playerHeelDeg = player.heel ?? 0;
       });
 
     // Continuous helm loop: ramps the rudder, auto-centers it, trims sails and
@@ -1297,6 +1372,14 @@ export class AppComponent implements OnInit, OnDestroy {
     return this.lakes.filter((lake) => lake.size === size);
   }
 
+  // Keeps <li> DOM nodes stable across the ~20Hz snapshot-driven `lakes` array
+  // replacements (each snapshot deserializes brand-new lake objects), so a real
+  // mouse click's mousedown/mouseup pair isn't interrupted by Angular tearing
+  // down and recreating the element mid-gesture.
+  trackByLakeId(_index: number, lake: LakeSummary): string {
+    return lake.id;
+  }
+
   joinLake(lakeId: string): void {
     if (lakeId !== this.currentLakeId) {
       this.store.dispatch(SimulationActions.joinLake({ lakeId }));
@@ -1398,6 +1481,11 @@ export class AppComponent implements OnInit, OnDestroy {
     } catch {
       /* Fullscreen API unavailable: the CSS fullscreen layout still applies. */
     }
+    (document.activeElement as HTMLElement | null)?.blur();
+  }
+
+  toggleViewMode(): void {
+    this.viewMode = this.viewMode === '2d' ? '3d' : '2d';
     (document.activeElement as HTMLElement | null)?.blur();
   }
 
@@ -1578,18 +1666,20 @@ export class AppComponent implements OnInit, OnDestroy {
     const force = drive.mainPower + Math.max(0, drive.jibPower);
     this.heel = this.clamp(leewardSign * force * Math.abs(lateral), -1, 1);
 
-    const controls: HelmControlState = { ...this.controls, sailTrim: drive.sailTrim };
+    const controls: HelmControlState = { ...this.controls, sailTrim: drive.sailTrim, heelLoad: drive.heelLoad };
     this.controls = controls;
 
     // Only push to the store/WS when something meaningfully changed.
     if (
       Math.abs(controls.rudder - this.lastSent.rudder) > 0.004 ||
       Math.abs(controls.sailTrim - this.lastSent.sailTrim) > 0.004 ||
+      Math.abs((controls.heelLoad ?? 0) - this.lastSent.heelLoad) > 0.004 ||
       controls.anchored !== this.lastSent.anchored
     ) {
       this.lastSent = {
         rudder: controls.rudder,
         sailTrim: controls.sailTrim,
+        heelLoad: controls.heelLoad ?? 0,
         anchored: controls.anchored,
       };
       this.store.dispatch(SimulationActions.controlsChanged({ controls }));
@@ -1609,12 +1699,13 @@ export class AppComponent implements OnInit, OnDestroy {
     this.controls = fresh;
     this.autoTrim = false;
     this.jibWing = 0;
-    this.lastSent = { rudder: 0, sailTrim: 0, anchored: true };
+    this.lastSent = { rudder: 0, sailTrim: 0, heelLoad: 0, anchored: true };
     this.store.dispatch(SimulationActions.controlsChanged({ controls: fresh }));
   }
 
   private computeDrive(controls: HelmControlState): {
     sailTrim: number;
+    heelLoad: number;
     mainThrust: number;
     jibThrust: number;
     mainPower: number;
@@ -1685,8 +1776,17 @@ export class AppComponent implements OnInit, OnDestroy {
     // Main carries most of the drive; reefing either sail always slows the boat
     // because the two are blended rather than saturated.
     const sailTrim = this.clamp(main.thrust * 0.6 + jib.thrust * 0.4, 0, 1);
+    // heelLoad is how hard the sails are loaded up (area x sheet), which keeps
+    // rising as you sheet in even past the drive optimum (an over-sheeted sail
+    // still heels the boat). The server turns this into heel/capsize.
+    const heelLoad = this.clamp(
+      controls.main.deploy * controls.main.sheet * 0.62 + controls.jib.deploy * controls.jib.sheet * 0.38,
+      0,
+      1,
+    );
     return {
       sailTrim,
+      heelLoad,
       mainThrust: main.thrust,
       jibThrust: jib.thrust,
       mainPower: main.power,

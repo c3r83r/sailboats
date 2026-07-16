@@ -5,6 +5,8 @@
   --panel: #0b3558;
   --accent: #ffd166;
   --text: #f8fbff;
+  --font-body: 'Inter', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  --font-display: 'Sora', 'Inter', 'Segoe UI', sans-serif;
 }
 
 * {
@@ -14,10 +16,19 @@
 body {
   margin: 0;
   min-height: 100vh;
-  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  font-family: var(--font-body);
   color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
   background:
     radial-gradient(circle at 20% 20%, #1b6ca8 0%, transparent 35%),
     radial-gradient(circle at 80% 10%, #2a9d8f 0%, transparent 30%),
     linear-gradient(140deg, var(--bg-deep), var(--bg-mid));
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-display);
+  letter-spacing: 0.01em;
 }

@@ -13,6 +13,9 @@ export interface BoatState {
   kills?: number;
   deaths?: number;
   bot?: boolean;
+  // Server-computed heel angle in degrees (signed) and capsize (knockdown) flag.
+  heel?: number;
+  capsized?: boolean;
 }
 
 export type FireSide = 'bow' | 'stern' | 'port' | 'starboard';
@@ -62,6 +65,7 @@ export interface SailControl {
 export interface HelmControlState {
   rudder: number; // -1 = full left (A), +1 = full right (D)
   sailTrim: number; // computed forward drive 0..1 sent to the backend
+  heelLoad?: number; // how hard the sails are sheeted/loaded 0..1 (drives heel)
   jib: SailControl;
   main: SailControl;
   anchored: boolean; // K key: anchor down -> boat held bow-into-wind

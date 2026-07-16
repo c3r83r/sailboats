@@ -104,6 +104,10 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
   private lastPointerX = 0;
   private lastPointerY = 0;
 
+  // Fixed scene light for the 2.5D look: sun sits high on the upper-left, so
+  // every cast shadow falls toward the lower-right by this screen-space offset.
+  private readonly shadowDir = { x: 0.62, y: 0.78 };
+
   ngAfterViewInit(): void {
     this.setupResponsiveCanvas();
     this.initWindParticles();
@@ -357,7 +361,7 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
 
     ctx.save();
     this.clipLake(ctx, lake);
-    this.drawWaterGrid(ctx, lake);
+    this.drawWater(ctx, lake);
     this.drawIslands(ctx, lake, scale);
     this.drawBuoys(ctx, lake, scale);
     // Wind blows over the islands too, so draw the particles on top of them.
@@ -388,16 +392,28 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
       // Other boats fall back to a generic trimmed look since we don't have their helm state.
       const mainSt: SailVisualState = isPlayer ? this.mainState : boat.sailTrim > 0.05 ? 'trim' : 'luff';
       const jibSt: SailVisualState = isPlayer ? this.jibState : boat.sailTrim > 0.05 ? 'trim' : 'luff';
-      const heel = isPlayer ? this.heel : 0;
+      const capsized = !!boat.capsized;
+      // Heel is now server-authoritative for every boat (degrees). Fall back to
+      // the local player estimate only if the server hasn't sent one yet.
+      const heelDeg = boat.heel ?? (isPlayer ? this.heel * 35 : 0);
+      const heel = this.clamp(heelDeg / 35, -1.2, 1.2);
       const color = this.boatColor(boat.boatId);
 
       // Sunk hulls drop their sails like an anchored boat (no canvas, no way on).
-      this.drawBoat(ctx, { x, y }, scale, boat.heading, boat.speed, main, jib, rudder, isPlayer, mainSt, jibSt, heel, color, anchored || sunk);
+      this.drawBoatShadow(ctx, x, y, scale, boat.heading, sunk || capsized);
+      this.drawBoat(ctx, { x, y }, scale, boat.heading, boat.speed, main, jib, rudder, isPlayer, mainSt, jibSt, heel, color, anchored || sunk || capsized);
 
-      if (anchored && !sunk) {
+      if (anchored && !sunk && !capsized) {
         this.drawAnchorBadge(ctx, x, y, scale, boat.heading);
       }
       this.drawHealthBar(ctx, x, y, scale, health, sunk);
+      if (capsized && !sunk) {
+        ctx.fillStyle = 'rgba(255, 209, 102, 0.95)';
+        ctx.font = `${Math.max(9, 11 * scale)}px Segoe UI`;
+        ctx.textAlign = 'center';
+        ctx.fillText('WYWRÓCONA', x, y - 24 * scale);
+        ctx.textAlign = 'left';
+      }
 
       ctx.fillStyle = isPlayer ? '#ffe19a' : boat.bot ? 'rgba(255, 180, 180, 0.92)' : 'rgba(248, 251, 255, 0.92)';
       ctx.font = `${Math.max(10, 13 * scale)}px Segoe UI`;
@@ -616,7 +632,8 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
   }
 
   private drawIslands(ctx: CanvasRenderingContext2D, lake: LakeRect, scale: number): void {
-    for (const island of this.islands) {
+    for (let idx = 0; idx < this.islands.length; idx++) {
+      const island = this.islands[idx];
       if (!island.points || island.points.length < 3) {
         continue;
       }
@@ -635,34 +652,123 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
       cx /= pts.length;
       cy /= pts.length;
 
-      const path = this.islandPath(pts);
+      let islandR = 0;
+      for (const p of pts) {
+        islandR = Math.max(islandR, Math.hypot(p.x - cx, p.y - cy));
+      }
 
-      // Shallow-water halo around the island so it reads as a hazard. Follow the
-      // smooth island path so the halo hugs the coastline instead of tracing
-      // hard polygon corners.
+      // Top-down mound (matching the 3D view): the land sits flat on the water,
+      // a sandy beach fringe easing into a grassy centre — no lifted cliff.
+      // A sandy beach rim slightly wider than the waterline silhouette so land
+      // eases into the water instead of ending on a hard edge.
+      const beachPts = pts.map((p) => ({ x: cx + (p.x - cx) * 1.1, y: cy + (p.y - cy) * 1.1 }));
+
+      const waterPath = this.islandPath(pts);
+      const beachPath = this.islandPath(beachPts);
+
+      // Cast shadow: the silhouette dropped toward the scene light so the land
+      // reads as sitting just proud of the water.
+      const shOff = Math.max(3, islandR * 0.1);
+      const shadowPts = pts.map((p) => ({ x: p.x + this.shadowDir.x * shOff, y: p.y + this.shadowDir.y * shOff }));
+      const shadowPath = this.islandPath(shadowPts);
+      ctx.save();
+      ctx.fillStyle = 'rgba(3, 14, 24, 0.28)';
+      ctx.fill(shadowPath);
+      ctx.restore();
+
+      // Soft shallow-water glow so the island reads as a hazard from a distance.
       ctx.save();
       ctx.lineJoin = 'round';
       ctx.lineCap = 'round';
-      ctx.strokeStyle = 'rgba(173, 216, 196, 0.45)';
-      ctx.lineWidth = 7 * scale;
-      ctx.stroke(path);
+      ctx.strokeStyle = 'rgba(180, 224, 205, 0.4)';
+      ctx.lineWidth = 9 * scale;
+      ctx.stroke(beachPath);
       ctx.restore();
 
-      let maxR = 0;
-      for (const p of pts) {
-        maxR = Math.max(maxR, Math.hypot(p.x - cx, p.y - cy));
-      }
-      const grad = ctx.createRadialGradient(cx, cy, maxR * 0.1, cx, cy, maxR);
-      grad.addColorStop(0, '#caa85f'); // sand core
-      grad.addColorStop(0.45, '#7fa05a'); // grass
-      grad.addColorStop(1, '#5d7e46'); // darker rim
-      ctx.fillStyle = grad;
-      ctx.fill(path);
+      // Sandy beach rim at the waterline.
+      const beach = ctx.createRadialGradient(cx, cy, islandR * 0.5, cx, cy, islandR * 1.12);
+      beach.addColorStop(0, '#e9d7a4');
+      beach.addColorStop(0.7, '#dcc487');
+      beach.addColorStop(1, 'rgba(210, 190, 130, 0.35)');
+      ctx.fillStyle = beach;
+      ctx.fill(beachPath);
 
-      ctx.strokeStyle = 'rgba(60, 84, 48, 0.85)';
+      // Grassy mound: warm sandy shore easing up to a green centre.
+      const grad = ctx.createRadialGradient(cx, cy, islandR * 0.08, cx, cy, islandR * 1.02);
+      grad.addColorStop(0, '#b9c47a'); // sun-bleached centre
+      grad.addColorStop(0.4, '#86a860'); // grass
+      grad.addColorStop(0.78, '#638a4b');
+      grad.addColorStop(1, '#4d7440'); // shaded shore
+      ctx.fillStyle = grad;
+      ctx.fill(waterPath);
+
+      // Vegetation detail: deterministic grass tufts and little trees clipped to
+      // the island so the surface no longer reads as a flat blob.
+      ctx.save();
+      ctx.clip(waterPath);
+      const rand = this.mulberry32(idx * 9973 + 17);
+      const tufts = Math.round(this.clamp(islandR / 9, 5, 22));
+      for (let i = 0; i < tufts; i++) {
+        const ang = rand() * Math.PI * 2;
+        const rr = Math.sqrt(rand()) * islandR * 0.82;
+        const px = cx + Math.cos(ang) * rr;
+        const py = cy + Math.sin(ang) * rr * 0.95;
+        const rad = (2 + rand() * 3) * scale;
+        // shadow blob then a lighter highlight for a soft tuft of foliage.
+        ctx.fillStyle = 'rgba(58, 84, 44, 0.5)';
+        ctx.beginPath();
+        ctx.ellipse(px + scale, py + scale, rad * 1.15, rad, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = rand() > 0.5 ? 'rgba(150, 180, 108, 0.8)' : 'rgba(122, 158, 92, 0.85)';
+        ctx.beginPath();
+        ctx.ellipse(px, py, rad, rad * 0.9, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      // A few small conifer trees near the centre for scale and life.
+      const trees = Math.round(this.clamp(islandR / 22, 1, 5));
+      for (let i = 0; i < trees; i++) {
+        const ang = rand() * Math.PI * 2;
+        const rr = Math.sqrt(rand()) * islandR * 0.5;
+        const px = cx + Math.cos(ang) * rr;
+        const py = cy + Math.sin(ang) * rr * 0.9;
+        const th = (7 + rand() * 4) * scale;
+        ctx.fillStyle = 'rgba(20, 40, 22, 0.35)';
+        ctx.beginPath();
+        ctx.ellipse(px + th * 0.4, py + th * 0.15, th * 0.7, th * 0.28, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#3f6a37';
+        ctx.beginPath();
+        ctx.moveTo(px, py - th);
+        ctx.lineTo(px - th * 0.5, py + th * 0.2);
+        ctx.lineTo(px + th * 0.5, py + th * 0.2);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = '#4f8043';
+        ctx.beginPath();
+        ctx.moveTo(px, py - th * 1.15);
+        ctx.lineTo(px - th * 0.36, py - th * 0.1);
+        ctx.lineTo(px + th * 0.36, py - th * 0.1);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.restore();
+
+      ctx.strokeStyle = 'rgba(58, 82, 46, 0.7)';
       ctx.lineWidth = 1.4 * scale;
-      ctx.stroke(path);
+      ctx.stroke(waterPath);
     }
+  }
+
+  // Small deterministic PRNG so island vegetation stays put frame to frame.
+  private mulberry32(seed: number): () => number {
+    let a = seed >>> 0;
+    return () => {
+      a |= 0;
+      a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
   }
 
   // Smooth, closed island outline through the given screen-space vertices.
@@ -851,37 +957,119 @@ export class WaterCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
   private drawShore(ctx: CanvasRenderingContext2D, width: number, height: number, lake: LakeRect): void {
     // No land border anymore: the area around the lake is just deep, dark water.
     const backdrop = ctx.createLinearGradient(0, 0, 0, height);
-    backdrop.addColorStop(0, '#0b2230');
-    backdrop.addColorStop(1, '#081a26');
+    backdrop.addColorStop(0, '#0a1e2b');
+    backdrop.addColorStop(1, '#06141d');
     ctx.fillStyle = backdrop;
     ctx.fillRect(0, 0, width, height);
 
+    // Deeper, richer water body: sunlit teal at the top edge fading into a dark
+    // blue-green depth toward the bottom for a more three-dimensional feel.
     const lakeGradient = ctx.createLinearGradient(lake.x, lake.y, lake.x, lake.y + lake.height);
-    lakeGradient.addColorStop(0, '#2d8ec4');
-    lakeGradient.addColorStop(0.5, '#1f6d98');
-    lakeGradient.addColorStop(1, '#174f72');
+    lakeGradient.addColorStop(0, '#3aa0d0');
+    lakeGradient.addColorStop(0.4, '#1f79a6');
+    lakeGradient.addColorStop(0.75, '#155571');
+    lakeGradient.addColorStop(1, '#0e3b52');
     ctx.fillStyle = lakeGradient;
     this.roundedRect(ctx, lake.x, lake.y, lake.width, lake.height, lake.radius);
     ctx.fill();
   }
 
-  private drawWaterGrid(ctx: CanvasRenderingContext2D, lake: LakeRect): void {
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
-    ctx.lineWidth = 1;
-    const stepX = lake.width / 16;
-    const stepY = lake.height / 10;
-    for (let x = lake.x + stepX; x < lake.x + lake.width; x += stepX) {
-      ctx.beginPath();
-      ctx.moveTo(x, lake.y);
-      ctx.lineTo(x, lake.y + lake.height);
-      ctx.stroke();
+  // Living water: animated crest highlights drifting downwind, a shimmering sun
+  // glint and a soft depth vignette. Replaces the old static grid.
+  private drawWater(ctx: CanvasRenderingContext2D, lake: LakeRect): void {
+    const rad = (this.windDirection * Math.PI) / 180;
+    const dx = Math.cos(rad);
+    const dy = Math.sin(rad);
+    // Crest lines run perpendicular to the wind and scroll along it.
+    const px = -dy;
+    const py = dx;
+
+    const cx = this.cssWidth / 2;
+    const cy = this.cssHeight / 2;
+    const reach = Math.hypot(this.cssWidth, this.cssHeight) / 2 + 40;
+    const spacing = 58;
+    const scroll = (this.phase * 12) % spacing;
+    const gust = this.clamp(this.windStrength / 5, 0.5, 1.5);
+
+    ctx.save();
+    ctx.lineCap = 'round';
+    for (let along = -reach; along <= reach; along += spacing) {
+      const off = along + scroll;
+      const k = off / spacing;
+      const amp = 2.4 + 1.8 * Math.sin(this.phase * 1.1 + k);
+      // Break each crest into a few short dashes so the water shimmers with
+      // scattered wavelets instead of long, rain-like streaks.
+      const segs = 7;
+      for (let g = 0; g < segs; g++) {
+        // Skip roughly every other dash, staggered per row, for a broken texture.
+        if ((g + Math.floor(k)) % 2 === 0) {
+          continue;
+        }
+        const t0 = -1 + (g / segs) * 2;
+        const t1 = -1 + ((g + 0.6) / segs) * 2;
+        const w0 = Math.sin(this.phase * 1.4 + t0 * 5 + k) * amp;
+        const w1 = Math.sin(this.phase * 1.4 + t1 * 5 + k) * amp;
+        const x0 = cx + dx * (off + w0) + px * t0 * reach;
+        const y0 = cy + dy * (off + w0) + py * t0 * reach;
+        const x1 = cx + dx * (off + w1) + px * t1 * reach;
+        const y1 = cy + dy * (off + w1) + py * t1 * reach;
+        const a = 0.03 + 0.02 * Math.sin(this.phase * 0.7 + k + g);
+        ctx.strokeStyle = `rgba(224, 246, 255, ${Math.max(0.015, a) * gust})`;
+        ctx.lineWidth = 1.1;
+        ctx.beginPath();
+        ctx.moveTo(x0, y0);
+        ctx.lineTo(x1, y1);
+        ctx.stroke();
+      }
     }
-    for (let y = lake.y + stepY; y < lake.y + lake.height; y += stepY) {
-      ctx.beginPath();
-      ctx.moveTo(lake.x, y);
-      ctx.lineTo(lake.x + lake.width, y);
-      ctx.stroke();
-    }
+    ctx.restore();
+
+    // Shimmering sun glint in the upper-left, matching the scene light.
+    const gx = lake.x + lake.width * 0.32;
+    const gy = lake.y + lake.height * 0.24;
+    const gr = Math.max(lake.width, lake.height) * 0.55;
+    const glint = ctx.createRadialGradient(gx, gy, 0, gx, gy, gr);
+    const gi = 0.1 + 0.03 * Math.sin(this.phase * 0.9);
+    glint.addColorStop(0, `rgba(255, 244, 210, ${gi})`);
+    glint.addColorStop(0.6, 'rgba(255, 244, 210, 0.03)');
+    glint.addColorStop(1, 'rgba(255, 244, 210, 0)');
+    ctx.fillStyle = glint;
+    ctx.fillRect(lake.x, lake.y, lake.width, lake.height);
+
+    // Depth vignette: darken the edges of the view so the centre reads closer.
+    const vr = reach * 1.1;
+    const vignette = ctx.createRadialGradient(cx, cy, vr * 0.45, cx, cy, vr);
+    vignette.addColorStop(0, 'rgba(3, 18, 30, 0)');
+    vignette.addColorStop(1, 'rgba(3, 16, 26, 0.45)');
+    ctx.fillStyle = vignette;
+    ctx.fillRect(lake.x, lake.y, lake.width, lake.height);
+  }
+
+  // Soft cast shadow under a hull, offset toward the scene light direction.
+  private drawBoatShadow(
+    ctx: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    scale: number,
+    heading: number,
+    sunk: boolean,
+  ): void {
+    const off = 7 * scale;
+    const ox = x + this.shadowDir.x * off;
+    const oy = y + this.shadowDir.y * off;
+    ctx.save();
+    ctx.translate(ox, oy);
+    ctx.rotate((heading * Math.PI) / 180);
+    ctx.scale(scale, scale);
+    const grad = ctx.createRadialGradient(0, 0, 2, 0, 0, 24);
+    const base = sunk ? 0.16 : 0.3;
+    grad.addColorStop(0, `rgba(3, 12, 22, ${base})`);
+    grad.addColorStop(1, 'rgba(3, 12, 22, 0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, 23, 10, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
   }
 
   private drawWindParticles(ctx: CanvasRenderingContext2D, lake: LakeRect): void {

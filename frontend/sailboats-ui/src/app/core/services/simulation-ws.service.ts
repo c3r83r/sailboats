@@ -47,13 +47,13 @@ export class SimulationWsService {
     return `${protocol}//${window.location.host}/ws/simulation`;
   }
 
-  sendControls(rudder: number, sailTrim: number, anchored: boolean): void {
+  sendControls(rudder: number, sailTrim: number, anchored: boolean, heelLoad = 0): void {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
       return;
     }
 
     // Backend simulation-service currently expects compact control payload.
-    this.socket.send(JSON.stringify({ rudder, sailTrim, anchored }));
+    this.socket.send(JSON.stringify({ rudder, sailTrim, anchored, heelLoad }));
   }
 
   sendFire(side: string, power: number): void {

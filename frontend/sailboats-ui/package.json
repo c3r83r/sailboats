@@ -19,6 +19,7 @@
     "@ngrx/effects": "^17.2.0",
     "@ngrx/store": "^17.2.0",
     "rxjs": "^7.8.1",
+    "three": "^0.160.1",
     "tslib": "^2.6.2",
     "zone.js": "^0.14.4"
   },
@@ -27,6 +28,7 @@
     "@angular/cli": "^17.3.0",
     "@angular/compiler-cli": "^17.3.0",
     "@types/jest": "^29.5.12",
+    "@types/three": "^0.160.0",
     "jest": "^29.7.0",
     "jest-preset-angular": "^14.0.4",
     "tailwindcss": "^3.4.7",

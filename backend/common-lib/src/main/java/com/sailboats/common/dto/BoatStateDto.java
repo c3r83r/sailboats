@@ -17,6 +17,8 @@ public record BoatStateDto(
     boolean sunk,
     int kills,
     int deaths,
-    boolean bot
+    boolean bot,
+    double heel,
+    boolean capsized
 ) {
 }

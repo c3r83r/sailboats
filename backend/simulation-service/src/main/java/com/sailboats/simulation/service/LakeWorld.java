@@ -34,7 +34,7 @@ public class LakeWorld {
     private final double worldHeight;
     private final boolean botsEnabled;
     private static final double DELTA_SECONDS = 0.05;
-    private static final double COLLISION_DISTANCE = 1.2;
+    private static final double COLLISION_DISTANCE = 1.5;
     private static final double BASE_DRIFT = 0.05;
     private static final double MAX_SPEED = 2.4;
 
@@ -51,6 +51,16 @@ public class LakeWorld {
     private static final double FALL_OFF_SPEED_REF = 0.45;
 
     private static final double ANCHOR_TURN_RATE = 60.0;
+
+    // Heel & capsize: the lateral component of the rig force leans the boat to
+    // leeward; a big enough gust on a beam reach with full sail knocks it flat.
+    private static final double HEEL_GAIN = 27.0; // deg per unit of heeling pressure
+    private static final double MAX_HEEL_DEG = 55.0;
+    private static final double HEEL_RESPONSE = 0.10; // how fast heel eases toward target
+    private static final double CAPSIZE_HEEL_DEG = 50.0; // beyond this the boat capsizes
+    private static final double CAPSIZE_LIE_DEG = 85.0; // heel angle while lying capsized
+    private static final long CAPSIZE_RECOVER_MS = 4000; // time flat before it rights
+    private static final double CAPSIZE_HEALTH_PENALTY = 8.0; // hull damage from a knockdown
 
     // Dynamic wind: a global gust factor that breathes over time with occasional
     // squalls, and a venturi ("nozzle") boost where the wind funnels through the
@@ -229,6 +239,7 @@ public class LakeWorld {
         }
         boat.setRudder(Math.max(-1, Math.min(1, input.rudder())));
         boat.setSailTrim(Math.max(0, Math.min(1, input.sailTrim())));
+        boat.setHeelLoad(Math.max(0, Math.min(1, input.heelLoad())));
         boat.setAnchored(input.anchored());
     }
 
@@ -288,6 +299,7 @@ public class LakeWorld {
         for (BoatState boat : boats.values()) {
             if (boat.isSunk()) {
                 boat.setSpeed(0);
+                boat.setHeel(boat.getHeel() * 0.85);
                 if (now - boat.getSunkAt() >= RESPAWN_MS) {
                     respawn(boat);
                 }
@@ -295,6 +307,27 @@ public class LakeWorld {
             }
 
             double windRad = Math.toRadians(windDirection);
+
+            // Capsized (knocked down): the boat lies flat, dead in the water, and
+            // slowly drifts to leeward until it rights itself after the recovery
+            // window. No helm, sail drive or bot AI runs while capsized.
+            if (boat.isCapsized()) {
+                boat.setSpeed(boat.getSpeed() * 0.9);
+                boat.setX(clampAxis(boat.getX() + Math.cos(windRad) * BASE_DRIFT * DELTA_SECONDS, worldWidth));
+                boat.setY(clampAxis(boat.getY() + Math.sin(windRad) * BASE_DRIFT * DELTA_SECONDS, worldHeight));
+                double lieSign = boat.getHeel() >= 0 ? 1.0 : -1.0;
+                double lie = lieSign * CAPSIZE_LIE_DEG;
+                boat.setHeel(boat.getHeel() + (lie - boat.getHeel()) * 0.2);
+                if (now - boat.getCapsizedAt() >= CAPSIZE_RECOVER_MS) {
+                    // Righted: sails spilled, dead in the water, and took on some water.
+                    boat.setCapsized(false);
+                    boat.setHeel(boat.getHeel() * 0.3);
+                    boat.setSpeed(0);
+                    boat.setSailTrim(0);
+                    boat.setHealth(Math.max(1.0, boat.getHealth() - CAPSIZE_HEALTH_PENALTY));
+                }
+                continue;
+            }
 
             if (boat.isBot()) {
                 // AI helm: steer, trim and fire before the shared physics runs.
@@ -307,6 +340,7 @@ public class LakeWorld {
                 double turnRate = ANCHOR_TURN_RATE * Math.signum(delta) * Math.min(1.0, Math.abs(delta) / 30.0);
                 boat.setHeading(normalizeHeading(boat.getHeading() + turnRate * DELTA_SECONDS));
                 boat.setSpeed(0);
+                boat.setHeel(boat.getHeel() * 0.85);
                 continue;
             }
 
@@ -373,6 +407,25 @@ public class LakeWorld {
             boat.setSpeed(nextSpeed);
             boat.setX(nextX);
             boat.setY(nextY);
+
+            // Heel: the lateral (heeling) component of the rig force leans the
+            // boat to leeward. Driven by how hard the sails are sheeted (heelLoad)
+            // rather than the forward drive, so hauling the sheets in on a beam
+            // reach heels the boat hard and can knock it down. Bots use sailTrim.
+            double relRad = Math.toRadians(signedDelta(windFrom, nextHeading));
+            double lateral = Math.sin(relRad);
+            double sailLoad = boat.isBot() ? boat.getSailTrim() : boat.getHeelLoad();
+            double heelPressure = windUnits * sailLoad * Math.abs(lateral);
+            double heelTarget = -Math.signum(lateral) * Math.min(MAX_HEEL_DEG, HEEL_GAIN * heelPressure);
+            double newHeel = boat.getHeel() + (heelTarget - boat.getHeel()) * HEEL_RESPONSE;
+            boat.setHeel(newHeel);
+            if (Math.abs(newHeel) >= CAPSIZE_HEEL_DEG) {
+                // Knocked down: laid flat, sails spilled, dead in the water.
+                boat.setCapsized(true);
+                boat.setCapsizedAt(now);
+                boat.setSpeed(0);
+                boat.setSailTrim(0);
+            }
         }
 
         detectCollisions(now);
@@ -393,6 +446,8 @@ public class LakeWorld {
         boat.setAnchored(true);
         boat.setHealth(100);
         boat.setSunk(false);
+        boat.setHeel(0);
+        boat.setCapsized(false);
         // Fresh life starts peaceful: bots ignore the player again until they fire.
         boat.setHasFired(false);
     }
@@ -423,20 +478,36 @@ public class LakeWorld {
                     ny = dy / distance;
                 }
 
-                double overlap = (COLLISION_DISTANCE - distance) / 2.0;
-                a.setX(a.getX() - nx * overlap);
-                a.setY(a.getY() - ny * overlap);
-                b.setX(b.getX() + nx * overlap);
-                b.setY(b.getY() + ny * overlap);
+                double overlap = COLLISION_DISTANCE - distance;
+                double push = overlap / 2.0 + 0.01; // fully separate, small bias so they don't stick
+                a.setX(a.getX() - nx * push);
+                a.setY(a.getY() - ny * push);
+                b.setX(b.getX() + nx * push);
+                b.setY(b.getY() + ny * push);
 
-                double avx = Math.cos(Math.toRadians(a.getHeading())) * a.getSpeed();
-                double avy = Math.sin(Math.toRadians(a.getHeading())) * a.getSpeed();
-                double bvx = Math.cos(Math.toRadians(b.getHeading())) * b.getSpeed();
-                double bvy = Math.sin(Math.toRadians(b.getHeading())) * b.getSpeed();
+                double afx = Math.cos(Math.toRadians(a.getHeading()));
+                double afy = Math.sin(Math.toRadians(a.getHeading()));
+                double bfx = Math.cos(Math.toRadians(b.getHeading()));
+                double bfy = Math.sin(Math.toRadians(b.getHeading()));
+                double avx = afx * a.getSpeed();
+                double avy = afy * a.getSpeed();
+                double bvx = bfx * b.getSpeed();
+                double bvy = bfy * b.getSpeed();
                 double closing = (avx - bvx) * nx + (avy - bvy) * ny;
 
-                a.setSpeed(a.getSpeed() * 0.5);
-                b.setSpeed(b.getSpeed() * 0.5);
+                // Solid hulls: cancel the part of each boat's forward motion that
+                // drives it into the other (n points from a to b), so the boats
+                // stop against each other instead of sailing through like sponges.
+                double aInto = afx * nx + afy * ny; // a's bow aimed toward b
+                if (aInto > 0) {
+                    a.setSpeed(a.getSpeed() * Math.max(0.0, 1.0 - aInto));
+                }
+                double bInto = -(bfx * nx + bfy * ny); // b's bow aimed toward a
+                if (bInto > 0) {
+                    b.setSpeed(b.getSpeed() * Math.max(0.0, 1.0 - bInto));
+                }
+                a.setSpeed(a.getSpeed() * 0.85);
+                b.setSpeed(b.getSpeed() * 0.85);
 
                 if (closing <= COLLISION_CLOSING_THRESHOLD) {
                     continue;
@@ -538,6 +609,8 @@ public class LakeWorld {
                 .kills(boat.getKills())
                 .deaths(boat.getDeaths())
                 .bot(boat.isBot())
+                .heel(boat.getHeel())
+                .capsized(boat.isCapsized())
                 .build()).toList())
             .projectiles(projectiles.stream().map(p -> ProjectileDto.builder()
                 .id(p.id)
@@ -559,6 +632,11 @@ public class LakeWorld {
     private double normalizeHeading(double heading) {
         double normalized = heading % 360;
         return normalized < 0 ? normalized + 360 : normalized;
+    }
+
+    // Clamp a world coordinate to [0, max].
+    private double clampAxis(double value, double max) {
+        return value < 0 ? 0 : (value > max ? max : value);
     }
 
     // ---- AI bots ----------------------------------------------------------
