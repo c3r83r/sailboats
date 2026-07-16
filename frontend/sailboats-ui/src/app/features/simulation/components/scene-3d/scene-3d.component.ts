@@ -101,6 +101,9 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
   private wakeTrail: { x: number; y: number }[] = [];
   private wakeSpeed = 0; // smoothed hull speed (scene units/sec) driving foam opacity
   private readonly WAKE_POINTS = 48;
+  // A single-frame jump larger than this (scene units) is a teleport (respawn or
+  // lake change), not sailing — we snap the visuals instead of gliding across.
+  private readonly TELEPORT_SNAP_DIST = 5;
 
   // Per-id mesh pools so we add/remove/update meshes as the sim changes.
   private boatMeshes = new Map<string, THREE.Group>();
@@ -1411,13 +1414,24 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
 
       // Smooth the boat's ground-plane position toward the latest server value.
       let disp = this.boatDisplay.get(boat.boatId);
+      const targetHead = (boat.heading * Math.PI) / 180;
       if (!disp) {
-        disp = { x: boat.x, y: boat.y, headRad: (boat.heading * Math.PI) / 180 };
+        disp = { x: boat.x, y: boat.y, headRad: targetHead };
         this.boatDisplay.set(boat.boatId, disp);
+      } else if (Math.hypot(boat.x - disp.x, boat.y - disp.y) > this.TELEPORT_SNAP_DIST) {
+        // Teleport (respawn / lake change): snap the display straight to the new
+        // spot instead of lerping the hull across the whole map at "warp speed".
+        disp.x = boat.x;
+        disp.y = boat.y;
+        disp.headRad = targetHead;
+        if (boat.boatId === this.playerBoatId) {
+          this.camReady = false; // let the chase camera jump, not fly, to the boat
+          this.wakeTrail.length = 0; // and don't smear a wake across the jump
+          this.wakeSpeed = 0;
+        }
       } else {
         disp.x += (boat.x - disp.x) * posK;
         disp.y += (boat.y - disp.y) * posK;
-        const targetHead = (boat.heading * Math.PI) / 180;
         let hd = targetHead - disp.headRad;
         while (hd > Math.PI) hd -= Math.PI * 2;
         while (hd < -Math.PI) hd += Math.PI * 2;
@@ -1839,6 +1853,17 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     }
     const head = trail[trail.length - 1];
     const moved = Math.hypot(sternX - head.x, sternZ - head.y);
+    // A big jump is a teleport, not sailing: restart the trail at the new spot so
+    // the ribbon doesn't stretch a foam streak across the whole scene.
+    if (moved > this.TELEPORT_SNAP_DIST) {
+      for (let i = 0; i < trail.length; i++) {
+        trail[i].x = sternX;
+        trail[i].y = sternZ;
+      }
+      this.wakeSpeed = 0;
+      (this.wake.material as THREE.MeshBasicMaterial).opacity = 0;
+      return;
+    }
     // Smooth the hull speed (units/sec) that drives foam opacity.
     const inst = dt > 0 ? moved / dt : 0;
     this.wakeSpeed += (inst - this.wakeSpeed) * (1 - Math.exp(-6 * dt));
