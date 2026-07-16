@@ -867,6 +867,13 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     ctx.fillRect(0, 248, 128, 8);
     ctx.fillStyle = 'rgba(22, 34, 92, 0.55)';
     ctx.fillRect(0, 244, 128, 3);
+    // Leech band (lik wolny): the same navy tape mirrored along the leech edge
+    // (u=1 => canvas right side), since on the jib the leech is a free edge too
+    // (not laced to a spar) and gets a matching boltrope tape in reality.
+    ctx.fillStyle = '#16225c';
+    ctx.fillRect(120, 0, 8, 256);
+    ctx.fillStyle = 'rgba(22, 34, 92, 0.55)';
+    ctx.fillRect(117, 0, 3, 256);
     const tex = new THREE.CanvasTexture(c);
     tex.anisotropy = 4;
     this.sailTexture = tex;
