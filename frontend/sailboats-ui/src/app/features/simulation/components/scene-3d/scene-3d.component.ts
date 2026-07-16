@@ -1004,7 +1004,11 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       // The boom is a fixed spar: it stays on the mast even when the sail is
       // furled (it just rests near the centreline).
       const boomY = 0.62;
-      const foot = 1.25;
+      // A mainsail is a roughly fixed triangle of cloth: reefing/furling shrinks
+      // it along BOTH the hoist and the boom together, so it keeps its shape
+      // rather than just getting taller. Foot and hoist share one reef factor.
+      const reef = 0.5 + 0.5 * mainDeploy;
+      const foot = 1.25 * reef;
       const boomAngle = show ? 0.12 + (1 - mainSheet) * 0.95 : 0.1;
       const tack = new THREE.Vector3(0.25, boomY, 0);
       const clew = new THREE.Vector3(
@@ -1019,7 +1023,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       if (show) {
         // Tall, high-aspect main running well up the taller mast, with a
         // convex (roached) leech like a real mainsail.
-        const headY = boomY + 2.9 * (0.6 + 0.4 * mainDeploy);
+        const headY = boomY + 2.9 * reef;
         const head = new THREE.Vector3(0.25, headY, 0);
         const power = mainDeploy * (0.35 + 0.65 * mainSheet);
         const belly = mainLuff ? 0.05 : 0.36 * power * camberScale;
