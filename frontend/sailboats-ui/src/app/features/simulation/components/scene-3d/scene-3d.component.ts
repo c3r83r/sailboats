@@ -1606,11 +1606,14 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       let g = this.buoyMeshes.get(buoy.id);
       if (!g) {
         g = this.makeBuoy();
+        // Match the 2D buoy footprint (~0.23 world-unit radius) now that the boat
+        // is at true world scale, so the pickup no longer dwarfs the hull.
+        g.scale.setScalar(0.55);
         this.buoyMeshes.set(buoy.id, g);
         this.scene.add(g);
       }
       const wy = this.waveHeight(buoy.x, buoy.y, t);
-      g.position.set(buoy.x, wy - 0.12, buoy.y);
+      g.position.set(buoy.x, wy - 0.07, buoy.y);
       g.rotation.y = t * 0.5; // slow spin keeps the "+" readable
     }
     for (const [id, g] of this.buoyMeshes) {
