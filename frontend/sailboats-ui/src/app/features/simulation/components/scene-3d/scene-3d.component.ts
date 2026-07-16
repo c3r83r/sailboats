@@ -89,6 +89,13 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
   private buoyMeshes = new Map<string, THREE.Group>();
   private lastIslandsRef: Island[] | null = null;
 
+  // Smoothed (interpolated) ground-plane position/heading per boat, keyed by
+  // boatId. Network snapshots only arrive ~20x/sec, so without this the hull
+  // (and anything locked to it, like the chase camera) would hold still for a
+  // few render frames and then visibly snap — read as "vibration"/jitter.
+  private boatDisplay = new Map<string, { x: number; y: number; headRad: number }>();
+
+
   private sharedGeo: THREE.BufferGeometry[] = [];
   private sharedMat: THREE.Material[] = [];
   private sailTexture?: THREE.CanvasTexture;
@@ -1197,8 +1204,12 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     ctx.closePath();
   }
 
-  private syncBoats(t: number): void {
+  private syncBoats(t: number, dt: number): void {
     const seen = new Set<string>();
+    // Frame-rate-independent smoothing so hull position/heading glide between
+    // the ~50ms network snapshots instead of freezing then jumping.
+    const posK = 1 - Math.exp(-9 * dt);
+    const headK = 1 - Math.exp(-7 * dt);
     for (const boat of this.boats) {
       seen.add(boat.boatId);
       let g = this.boatMeshes.get(boat.boatId);
@@ -1208,9 +1219,24 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
         this.boatMeshes.set(boat.boatId, g);
       }
 
-      // Float the boat on the wave surface at its position.
-      const wy = this.waveHeight(boat.x, boat.y, t);
-      g.position.set(boat.x, wy, boat.y);
+      // Smooth the boat's ground-plane position toward the latest server value.
+      let disp = this.boatDisplay.get(boat.boatId);
+      if (!disp) {
+        disp = { x: boat.x, y: boat.y, headRad: (boat.heading * Math.PI) / 180 };
+        this.boatDisplay.set(boat.boatId, disp);
+      } else {
+        disp.x += (boat.x - disp.x) * posK;
+        disp.y += (boat.y - disp.y) * posK;
+        const targetHead = (boat.heading * Math.PI) / 180;
+        let hd = targetHead - disp.headRad;
+        while (hd > Math.PI) hd -= Math.PI * 2;
+        while (hd < -Math.PI) hd += Math.PI * 2;
+        disp.headRad += hd * headK;
+      }
+
+      // Float the boat on the wave surface at its (smoothed) position.
+      const wy = this.waveHeight(disp.x, disp.y, t);
+      g.position.set(disp.x, wy, disp.y);
 
       // Heel the WHOLE boat (hull + rig) around its forward axis: yaw to the
       // heading, then roll to the heel angle. Eased for smoothness.
@@ -1220,7 +1246,7 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       const curRoll = (g.userData['heelRad'] as number) ?? 0;
       const heelRad = curRoll + (targetRoll - curRoll) * 0.15;
       g.userData['heelRad'] = heelRad;
-      const yaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -(boat.heading * Math.PI) / 180);
+      const yaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -disp.headRad);
       const roll = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), heelRad);
       g.quaternion.copy(yaw).multiply(roll);
 
@@ -1254,11 +1280,12 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       });
     }
 
-    // Remove meshes for boats that left.
+    // Remove meshes (and display state) for boats that left.
     for (const [id, g] of this.boatMeshes) {
       if (!seen.has(id)) {
         this.scene?.remove(g);
         this.boatMeshes.delete(id);
+        this.boatDisplay.delete(id);
       }
     }
   }
@@ -1268,18 +1295,26 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     const player = boat.boatId === this.playerBoatId;
     const c: HelmControlState | null = player ? this.controls : null;
 
-    // Deploy / sheet: the player has a detailed helm; other boats only report a
-    // single sailTrim, so we derive plausible values from it.
-    const trim = boat.sailTrim ?? 0;
-    const mainDeploy = c ? this.clamp01(c.main.deploy) : trim > 0.04 ? this.clamp01(0.45 + trim) : 0;
+    // Deploy / sheet: the player has a detailed helm exposing explicit deploy
+    // state. Other boats only report a single sailTrim (a drive/thrust ratio,
+    // near zero while luffing or in irons), so we can't infer "sail down" from
+    // it — a luffing sail also has ~0 trim. Instead assume any boat that is
+    // sailing (not anchored/sunk) has both sails hoisted, and use sailTrim only
+    // to drive the sheet/camber and to decide whether the cloth is drawing or
+    // luffing — never whether it's visible.
+    const trim = this.clamp01(boat.sailTrim ?? 0);
+    const hoisted = !boat.anchored && !boat.sunk;
+    const mainDeploy = c ? this.clamp01(c.main.deploy) : hoisted ? 1 : 0;
     const mainSheet = c ? this.clamp01(c.main.sheet) : trim;
-    const jibDeploy = c ? this.clamp01(c.jib.deploy) : trim > 0.04 ? this.clamp01(0.35 + trim) : 0;
+    const jibDeploy = c ? this.clamp01(c.jib.deploy) : hoisted ? 1 : 0;
     const jibSheet = c ? this.clamp01(c.jib.sheet) : trim;
 
-    // Luffing: the player exposes explicit sail state; for others a sail that is
-    // hoisted while the boat sits bolt upright is effectively head-to-wind.
-    const mainLuff = player ? this.mainState === 'luff' || this.mainState === 'down' : Math.abs(heelDeg) < 3 && mainDeploy > 0;
-    const jibLuff = player ? this.jibState === 'luff' || this.jibState === 'down' : Math.abs(heelDeg) < 3 && jibDeploy > 0;
+    // Luffing: the player exposes explicit sail state; for others a low drive
+    // ratio (in irons, tacking through the wind, or an eased sheet) means the
+    // sail is up but luffing rather than drawing.
+    const mainLuff = player ? this.mainState === 'luff' || this.mainState === 'down' : mainDeploy > 0 && trim < 0.12;
+    const jibLuff = player ? this.jibState === 'luff' || this.jibState === 'down' : jibDeploy > 0 && trim < 0.12;
+
 
     const lee = heelDeg >= 0 ? 1 : -1;
     const gust = this.clamp(this.windStrength / 5, 0.6, 1.6);
@@ -1590,11 +1625,15 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
       return;
     }
     const t = this.clock.getElapsedTime();
+    // Real elapsed time since the last frame, used for every frame-rate
+    // independent smoothing step below (boat interpolation, camera, wind).
+    const dt = this.lastTime ? Math.min(0.05, t - this.lastTime) : 0.016;
+    this.lastTime = t;
 
     this.ensureIslands();
     this.ensureWorldBounds();
     this.ensureWindStreaks();
-    this.syncBoats(t);
+    this.syncBoats(t, dt);
     this.syncBuoys(t);
 
     // Recentre the water on the player and displace its vertices for real waves.
@@ -1617,17 +1656,17 @@ export class Scene3dComponent implements AfterViewInit, OnDestroy {
     // steering left swings the whole world left. The boat stays centred.
     // Third-person chase camera locked astern of the player and turning WITH the
     // boat's heading, so the boat stays dead-centre in the frame. We read the
-    // boat mesh's own position so the target can never drift from what's drawn.
+    // boat mesh's own (smoothed) position/heading so the target can never snap
+    // independently of what's drawn.
     const player = this.playerBoatId ? this.boats.find((b) => b.boatId === this.playerBoatId) : undefined;
     const boatMesh = this.playerBoatId ? this.boatMeshes.get(this.playerBoatId) : undefined;
-    const h = ((player ? player.heading : 90) * Math.PI) / 180;
+    const playerDisp = this.playerBoatId ? this.boatDisplay.get(this.playerBoatId) : undefined;
+    const h = playerDisp ? playerDisp.headRad : ((player ? player.heading : 90) * Math.PI) / 180;
     const boatPos = boatMesh ? boatMesh.position : new THREE.Vector3(p.x, this.waveHeight(p.x, p.y, t), p.y);
     const camDist = 11;
     const camHeight = 5.6;
 
     // Advance the manual orbit (9 / 0 keys) using real elapsed time.
-    const dt = this.lastTime ? Math.min(0.05, t - this.lastTime) : 0.016;
-    this.lastTime = t;
     this.orbit += this.orbitDir * this.ORBIT_SPEED * dt;
 
     // Drift the wind streaks downwind around the player.
