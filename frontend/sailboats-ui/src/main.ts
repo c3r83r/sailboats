@@ -1,14 +1,17 @@
 import { provideHttpClient } from '@angular/common/http';
 import { bootstrapApplication } from '@angular/platform-browser';
+import { provideRouter } from '@angular/router';
 import { provideStore } from '@ngrx/store';
 import { provideEffects } from '@ngrx/effects';
-import { AppComponent } from './app/app.component';
+import { AppShellComponent } from './app/app-shell.component';
+import { routes } from './app/app.routes';
 import { simulationFeatureKey, simulationReducer } from './app/store/simulation/simulation.reducer';
 import { SimulationEffects } from './app/store/simulation/simulation.effects';
 
-bootstrapApplication(AppComponent, {
+bootstrapApplication(AppShellComponent, {
   providers: [
     provideHttpClient(),
+    provideRouter(routes),
     provideStore({
       [simulationFeatureKey]: simulationReducer,
     }),
